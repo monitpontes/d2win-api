@@ -14,6 +14,7 @@ import pushRouter from "./routes/push.js";
 import alertsRouter from "./routes/alerts.js";
 import { errorHandler, notFound } from "./middleware/errors.js";
 import { ensureTimeSeries } from "./scripts/initTimeseries.js";
+import health from "./routes/health.js";
 
 dotenv.config();
 
@@ -33,9 +34,7 @@ app.use("/sensors", legacyRouter); // backward-compat if needed
 app.use("/recipients", recipientsRouter);
 app.use("/push", pushRouter);
 app.use("/alerts", alertsRouter);
-
-// health
-app.get("/health", (req, res) => res.json({ ok: true }));
+app.use(health);
 
 // 404 + error
 app.use(notFound);
