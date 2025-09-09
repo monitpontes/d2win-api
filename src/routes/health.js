@@ -1,6 +1,7 @@
 // src/routes/health.js
 import { Router } from "express";
 import { dbHealthSnapshot } from "../lib/db.js";
+import { nowBrazilISO } from "../lib/time.js";
 
 const router = Router();
 
@@ -14,7 +15,7 @@ router.get("/health", async (_req, res) => {
     lastConnectedAt: snap.lastConnectedAt,
     lastError: snap.lastError,
     uptime: process.uptime(),
-    ts: new Date().toISOString(),
+    ts: nowBrazilISO(),
   });
 });
 
