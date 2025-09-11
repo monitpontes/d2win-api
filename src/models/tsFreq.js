@@ -3,10 +3,8 @@ import mongoose from "mongoose";
 
 const MetaSchema = new mongoose.Schema(
   {
-    object_id: { type: mongoose.Schema.Types.ObjectId, required: true },
     company_id: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true },
     bridge_id:  { type: mongoose.Schema.Types.ObjectId, ref: "Bridge", required: true },
-    device_id:  { type: String, required: true },
   },
   { _id: false }
 );
@@ -19,6 +17,7 @@ const PeakSchema = new mongoose.Schema(
 const TsFreqPeaksSchema = new mongoose.Schema(
   {
     device_id: { type: String, required: true },
+    object_id: { type: mongoose.Schema.Types.ObjectId, required: true },
     meta:      { type: MetaSchema, required: true },
     ts:        { type: Date, required: true }, // UTC
     ts_br:     { type: String, required: true },
