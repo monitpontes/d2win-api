@@ -10,12 +10,13 @@ export async function getParams(req, res, next) {
     const p = device.params_current ? device.params_current.toObject() : {};
     res.json({
       device_number: p.device_number ?? device.device_number ?? device._id?.toString().slice(-3),
-      intervalo_aquisicao: p.intervalo_aquisicao,
-      amostras: p.amostras,
-      freq_amostragem: p.freq_amostragem,
-      activity_threshold: p.activity_threshold,
-      modo_operacao: p.modo_operacao ?? device.modo_operacao,
-      modo_execucao: p.modo_execucao,
+      intervalo_aquisicao: p.intervalo_aquisicao ?? 1000,        // <<<< VALOR PADRÃO
+      amostras: p.amostras ?? 4096,                              // <<<< VALOR PADRÃO
+      freq_amostragem: p.freq_amostragem ?? 50,                  // <<<< VALOR PADRÃO
+      activity_threshold: p.activity_threshold ?? 0.9,          // <<<< VALOR PADRÃO
+      tempo_calibracao: p.tempo_calibracao ?? 5000,             // <<<< VALOR PADRÃO
+      modo_operacao: p.modo_operacao ?? device.modo_operacao ?? "aceleracao",
+      modo_execucao: p.modo_execucao ?? "operacao",             // <<<< VALOR PADRÃO
       modo_teste: p.modo_teste ?? "completo"
     });
   } catch (e) { next(e); }
