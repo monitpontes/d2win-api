@@ -34,7 +34,7 @@ export async function getParams(req, res, next) {
       activity_threshold: p.activity_threshold ?? 0.9,
       tempo_calibracao: p.tempo_calibracao ?? 5000,
       modo_operacao: p.modo_operacao ?? device.modo_operacao ?? "aceleracao",
-      modo_execucao: p.modo_execucao ?? "operacao",
+      modo_execucao: p.modo_execucao ?? "debug",
       modo_teste: p.modo_teste ?? "completo"
     });
   } catch (e) { 
