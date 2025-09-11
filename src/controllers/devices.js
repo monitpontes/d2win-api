@@ -16,7 +16,7 @@ export async function getParams(req, res, next) {
       activity_threshold: p.activity_threshold ?? 0.9,          // <<<< VALOR PADRÃO
       tempo_calibracao: p.tempo_calibracao ?? 5000,             // <<<< VALOR PADRÃO
       modo_operacao: p.modo_operacao ?? device.modo_operacao ?? "aceleracao",
-      modo_execucao: p.modo_execucao ?? "operacao",             // <<<< VALOR PADRÃO
+      modo_execucao: p.modo_execucao ?? "teste",             // <<<< VALOR PADRÃO
       modo_teste: p.modo_teste ?? "completo"
     });
   } catch (e) { next(e); }

@@ -1,3 +1,4 @@
+// src/models/device.js
 import mongoose from "mongoose";
 
 const DeviceSchema = new mongoose.Schema(
