@@ -1,4 +1,4 @@
-
+// src/controllers/devices.js
 import Device from "../models/device.js";
 import DeviceCommand from "../models/deviceCommand.js";
 
@@ -14,7 +14,7 @@ export async function getParams(req, res, next) {
       amostras: p.amostras,
       freq_amostragem: p.freq_amostragem,
       activity_threshold: p.activity_threshold,
-      modo_operacao: p.modo_operacao,
+      modo_operacao: p.modo_operacao ?? device.modo_operacao,
       modo_execucao: p.modo_execucao,
       modo_teste: p.modo_teste ?? "completo"
     });
@@ -32,9 +32,26 @@ export async function patchParams(req, res, next) {
     const current = device?.params_current ? device.params_current.toObject() : {};
     const merged = { ...current, ...incoming, modo_teste: "completo" };
 
+    // Preparar campos para atualizar
+    const updateFields = {
+      firmware_version: fw,
+      params_current: merged,
+      last_seen: new Date()
+    };
+
+    // Se modo_operacao vier no body, atualizar também
+    if (body.modo_operacao) {
+      updateFields.modo_operacao = body.modo_operacao;
+    }
+
+    // Se infos vier no body, atualizar também  
+    if (body.infos) {
+      updateFields.infos = body.infos;
+    }
+
     const updated = await Device.findOneAndUpdate(
       { device_id: id },
-      { $set: { firmware_version: fw, params_current: merged, last_seen: new Date() } },
+      { $set: updateFields },
       { new: true, upsert: true, setDefaultsOnInsert: true }
     );
     res.status(200).json({ ok: true, device_id: updated.device_id });
