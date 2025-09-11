@@ -9,6 +9,23 @@ import { toBrazilISOFromUTC } from "../lib/time.js";
 import { sendWebPushToRecipient, sendSMS } from "../services/notify.js";
 import Recipient from "../models/recipient.js";
 
+const accelSchema = Joi.object({
+  device_id: Joi.string().required(),
+  ts: Joi.alternatives(Joi.date(), Joi.string(), Joi.number()).optional(),
+  axis: Joi.string().valid("x","y","z").default("z"),
+  value: Joi.number().required(),
+  fw: Joi.string().optional()
+});
+
+async function notifyBridge(bridge_id, payload, severity) {
+  const recipients = await Recipient.find({ bridge_id, active: true, severity });
+  for (const r of recipients) {
+    if (r.channels?.includes("push"))
+      await sendWebPushToRecipient(r._id, payload);
+    if (r.channels?.includes("sms") && r.phone)
+      await sendSMS(r.phone, `${payload.title}: ${payload.body}`);
+  }
+}
 
 export async function ingestAccel(req, res, next) {
   try {
