@@ -6,7 +6,7 @@ import { ingestFrequency } from "../controllers/ingestFreq.js";
 const router = Router();
 
 router.post("/accel", ingestAccel);
-router.post("/frequency", ingestFrequency);
+router.post("/freq", ingestFrequency);
 
 export default router;
 
