@@ -15,6 +15,12 @@ const BridgeStatusSchema = new mongoose.Schema({
   company_id: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
   bridge_id:  { type: mongoose.Schema.Types.ObjectId, ref: "Bridge", required: true, index: true },
 
+  // metadados com nomes legíveis
+  meta: {
+    company_name: { type: String },
+    bridge_name:  { type: String }
+  },
+
   // resumo + marcação de tempo
   updated_at: { type: Date, default: () => new Date() }, // UTC
   ts_br:      { type: String },                           // BR-3
@@ -29,7 +35,7 @@ const BridgeStatusSchema = new mongoose.Schema({
     status:   { type: String, enum: ["active","stale","offline"], default: "offline" }, // status da ponte
   },
 
-  // “snapshot” dos dispositivos dessa ponte
+  // "snapshot" dos dispositivos dessa ponte
   devices: { type: [DeviceMiniSchema], default: [] },
 }, { collection: "bridge_device_status", versionKey: false });
 
