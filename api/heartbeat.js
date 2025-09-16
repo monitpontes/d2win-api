@@ -15,12 +15,4 @@ export default async function handler(req, res) {
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
-
-  try {
-    await connectMongo(process.env.MONGO_URI);
-    const result = await runBridgeHeartbeatOnce();
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
 }
