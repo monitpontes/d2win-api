@@ -18,6 +18,13 @@ import health from "./routes/health.js";
 import telemetryRoutes from "./routes/telemetry.js";
 import { startBridgeHeartbeat } from "./services/bridgeHeartbeat.js";
 
+// CRUD Routes
+import companiesRouter from "./routes/companies.js";
+import bridgesRouter from "./routes/bridges.js";
+import bridgeLimitsRouter from "./routes/bridgeLimits.js";
+import devicesCrudRouter from "./routes/devicesCrud.js";
+import bridgeStatusRouter from "./routes/bridgeStatus.js";
+
 dotenv.config();
 
 const app = express();
@@ -38,6 +45,13 @@ app.use("/push", pushRouter);
 app.use("/alerts", alertsRouter);
 app.use(health);
 app.use("/telemetry", telemetryRoutes);
+
+// CRUD routes
+app.use("/companies", companiesRouter);
+app.use("/bridges", bridgesRouter);
+app.use("/bridge-limits", bridgeLimitsRouter);
+app.use("/devices-crud", devicesCrudRouter);
+app.use("/bridge-status", bridgeStatusRouter);
 
 // 404 + error
 app.use(notFound);
