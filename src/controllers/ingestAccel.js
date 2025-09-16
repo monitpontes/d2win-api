@@ -11,9 +11,9 @@ import { sendWebPushToRecipient, sendSMS } from "../services/notify.js";
 
 const accelSchema = Joi.object({
   device_id: Joi.string().required(),
-  ts:        Joi.alternatives(Joi.date(), Joi.string(), Joi.number()).optional(),
-  axis:      Joi.string().valid("x", "y", "z").default("z"),
-  value:     Joi.number().required()
+  ts: Joi.alternatives(Joi.date(), Joi.string(), Joi.number()).optional(),
+  axis: Joi.string().valid("x", "y", "z").default("z"),
+  value: Joi.number().required()
 });
 
 // ---- Limites por dispositivo com fallback para BridgeLimit
@@ -24,9 +24,9 @@ function resolveAccelLimitsFromDevice(dev, bridgeLim) {
     {};
 
   return {
-    max_warning:  dl.max_warning  ?? dl.alert     ?? bridgeLim?.accel_alert       ?? 10.0,
-    max_critical: dl.max_critical ?? dl.critical  ?? bridgeLim?.accel_critical    ?? 12.0,
-    min_warning:  dl.min_warning  ?? dl.min_alert ?? bridgeLim?.accel_min_alert   ?? null,
+    max_warning: dl.max_warning ?? dl.alert ?? bridgeLim?.accel_alert ?? 10.0,
+    max_critical: dl.max_critical ?? dl.critical ?? bridgeLim?.accel_critical ?? 12.0,
+    min_warning: dl.min_warning ?? dl.min_alert ?? bridgeLim?.accel_min_alert ?? null,
     min_critical: dl.min_critical ?? dl.min_critical ?? bridgeLim?.accel_min_critical ?? null
   };
 }
@@ -34,9 +34,9 @@ function resolveAccelLimitsFromDevice(dev, bridgeLim) {
 function classifyTwoSidedWarning(x, lim) {
   const v = Math.abs(x);
   if ((lim.max_critical != null && v >= lim.max_critical) ||
-      (lim.min_critical != null && v >= lim.min_critical)) return "critical";
+    (lim.min_critical != null && v >= lim.min_critical)) return "critical";
   if ((lim.max_warning != null && v >= lim.max_warning) ||
-      (lim.min_warning != null && v >= lim.min_warning)) return "warning";
+    (lim.min_warning != null && v >= lim.min_warning)) return "warning";
   return "normal";
 }
 
@@ -74,8 +74,8 @@ export async function ingestAccel(req, res, next) {
       meta: {
         object_id: docId,
         company_id: dev.company_id,
-        bridge_id:  dev.bridge_id,
-        device_id:  dev.device_id,
+        bridge_id: dev.bridge_id,
+        device_id: dev.device_id,
         axis: body.axis || "z",
       },
       ts: tsUTC,
@@ -84,18 +84,23 @@ export async function ingestAccel(req, res, next) {
       severity
     });
 
+    await Device.updateOne(
+      { device_id: body.device_id },
+      { $set: { last_seen: tsUTC } }
+    );
+
     if (severity !== "normal") {
       const rotulo = severity === "critical" ? "CRÍTICO" : "AVISO";
       const ref = severity === "critical"
         ? (lim.max_critical ?? lim.min_critical)
-        : (lim.max_warning  ?? lim.min_warning);
+        : (lim.max_warning ?? lim.min_warning);
 
       const message = `Aceleração ${body.value.toFixed(2)} m/s² > limite ${rotulo} (${ref} m/s²)`;
 
       await Alert.create({
         company_id: dev.company_id,
-        bridge_id:  dev.bridge_id,
-        device_id:  dev.device_id,
+        bridge_id: dev.bridge_id,
+        device_id: dev.device_id,
         type: "accel",
         severity,
         message,

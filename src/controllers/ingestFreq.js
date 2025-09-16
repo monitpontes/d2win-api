@@ -80,6 +80,11 @@ export async function ingestFrequency(req, res, next) {
       severity
     });
 
+    await Device.updateOne(
+  { device_id: body.device_id },
+  { $set: { last_seen: tsUTC } }
+);
+
     return res.status(201).json({ ok: true, id: docId.toString() });
   } catch (e) {
     next(e);

@@ -15,6 +15,8 @@ import alertsRouter from "./routes/alerts.js";
 import { errorHandler, notFound } from "./middleware/errors.js";
 import { ensureTimeSeries } from "./scripts/initTimeseries.js";
 import health from "./routes/health.js";
+import telemetryRoutes from "./routes/telemetry.js";
+import { startBridgeHeartbeat } from "./services/bridgeHeartbeat.js";
 
 dotenv.config();
 
@@ -35,6 +37,7 @@ app.use("/recipients", recipientsRouter);
 app.use("/push", pushRouter);
 app.use("/alerts", alertsRouter);
 app.use(health);
+app.use("/telemetry", telemetryRoutes);
 
 // 404 + error
 app.use(notFound);
@@ -52,6 +55,7 @@ const start = async () => {
   await connectMongo(MONGO_URI);
   if ((process.env.INIT_TIMESERIES || "false").toLowerCase() === "true") {
     await ensureTimeSeries();
+    startBridgeHeartbeat();
   }
   app.listen(PORT, () => console.log(`API listening on :${PORT}`));
 };

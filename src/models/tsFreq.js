@@ -7,6 +7,7 @@ const MetaSchema = new mongoose.Schema(
     company_id: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true },
     bridge_id:  { type: mongoose.Schema.Types.ObjectId, ref: "Bridge", required: true },
     device_id:  { type: String, required: true },
+    stream:     { type: String, default: "freq:z" },
   },
   { _id: false }
 );
@@ -30,5 +31,10 @@ const TsFreqPeaksSchema = new mongoose.Schema(
   },
   { collection: "telemetry_ts_freq_peaks", versionKey: false }
 );
+
+// índices úteis para dashboards/consultas
+TsFreqPeaksSchema.index({ "meta.company_id": 1, "meta.bridge_id": 1, "meta.device_id": 1, ts: -1 });
+TsFreqPeaksSchema.index({ "meta.device_id": 1, ts: -1 });
+TsFreqPeaksSchema.index({ ts: -1 });
 
 export default mongoose.model("TsFreqPeaks", TsFreqPeaksSchema);
