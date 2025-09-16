@@ -7,7 +7,7 @@ import { toBrazilISOFromUTC, brazilPartsFromUTC } from "../lib/time.js";
 /** Coleções cruas (time-series) usadas via driver nativo */
 const ACCEL = "telemetry_ts_accel";
 const FREQ  = "telemetry_ts_freq_peaks";
-const STAT  = "telemetry_ts_device_status";
+//const STAT  = "telemetry_ts_device_status";
 
 /* =====================================================================
  * INSERÇÕES DE TELEMETRIA (com ts UTC e ts_br obrigatório)
