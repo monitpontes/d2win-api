@@ -19,22 +19,14 @@ export async function runBridgeHeartbeatOnce() {
     const devices = await Device.find(
         {},
         { device_id: 1, company_id: 1, bridge_id: 1, last_seen: 1, isActive: 1 }
-    ).populate('company_id', 'name')
-    .populate('bridge_id', 'name')
-    .lean();
+    ).lean();
 
     // agrupa por ponte
     const byBridge = new Map();
     for (const d of devices) {
-        const key = String(d.bridge_id._id || d.bridge_id);
+        const key = String(d.bridge_id);
         if (!byBridge.has(key)) {
-            byBridge.set(key, { 
-                company_id: d.company_id._id || d.company_id, 
-                bridge_id: d.bridge_id._id || d.bridge_id,
-                company_name: d.company_id?.name || 'Nome não encontrado',
-                bridge_name: d.bridge_id?.name || 'Nome não encontrado',
-                devices: [] 
-            });
+            byBridge.set(key, { company_id: d.company_id, bridge_id: d.bridge_id, devices: [] });
         }
         const last = d.last_seen ? new Date(d.last_seen) : null;
         const ms = last ? (now - last.getTime()) : Number.POSITIVE_INFINITY;
@@ -69,10 +61,6 @@ export async function runBridgeHeartbeatOnce() {
                     ts_br: parts.ts_br,
                     date_br: parts.date_br,
                     hour_br: parts.hour_br,
-                    meta: {
-                        company_name: grp.company_name,
-                        bridge_name: grp.bridge_name
-                    },
                     summary: { ...totals, status: bridgeStatus },
                     devices: grp.devices
                 }
@@ -98,3 +86,4 @@ export function stopBridgeHeartbeat() {
     if (timer) clearInterval(timer);
     timer = null;
 }
+
