@@ -24,8 +24,6 @@ const BridgeStatusSchema = new mongoose.Schema({
   // resumo + marcação de tempo
   updated_at: { type: Date, default: () => new Date() }, // UTC
   ts_br:      { type: String },                           // BR-3
-  date_br:    { type: String },                           // "YYYY-MM-DD"
-  hour_br:    { type: Number },                           // 0..23
 
   summary: {
     total:    { type: Number, default: 0 },
