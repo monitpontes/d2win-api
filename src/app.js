@@ -25,6 +25,10 @@ import bridgeLimitsRouter from "./routes/bridgeLimits.js";
 import devicesCrudRouter from "./routes/devicesCrud.js";
 import bridgeStatusRouter from "./routes/bridgeStatus.js";
 
+// NOVAS: auth + users (precisam export default router)
+import authRouter from "./routes/auth.js";
+import usersRouter from "./routes/users.js";
+
 // middlewares/serviços
 import { errorHandler, notFound } from "./middleware/errors.js";
 import { ensureTimeSeries } from "./scripts/initTimeseries.js";
@@ -45,7 +49,7 @@ app.use("/public", express.static(path.join(__dirname, "public")));
 // ---- Rotas ----
 app.use("/devices", devicesRouter);
 app.use("/ingest", ingestRouter);
-app.use("/sensors", legacyRouter); // compat
+app.use("/sensors", legacyRouter);
 app.use("/recipients", recipientsRouter);
 app.use("/push", pushRouter);
 app.use("/alerts", alertsRouter);
@@ -59,32 +63,56 @@ app.use("/bridge-limits", bridgeLimitsRouter);
 app.use("/devices-crud", devicesCrudRouter);
 app.use("/bridge-status", bridgeStatusRouter);
 
+// NOVAS
+app.use("/auth", authRouter);
+app.use("/users", usersRouter);
+
 // 404 + error
 app.use(notFound);
 app.use(errorHandler);
 
-// ---- Boot (conexão e inicializações) ----
-export async function boot() {
-  const MONGO_URI = process.env.MONGO_URI;
-  if (!MONGO_URI) throw new Error("Missing MONGO_URI");
+// ---- Boot / Handler ----
+const MONGO_URI = process.env.MONGO_URI;
+const isServerless = !!process.env.VERCEL || !!process.env.NOW_REGION;
 
+let bootPromise; // garante boot único por cold start
+
+async function boot() {
+  if (!MONGO_URI) throw new Error("Missing MONGO_URI");
   await connectMongo(MONGO_URI);
 
-  if ((process.env.INIT_TIMESERIES || "false").toLowerCase() === "true") {
+  // Em serverless (Vercel) evite timers longos
+  const initTS = (process.env.INIT_TIMESERIES || "false").toLowerCase() === "true";
+  if (!isServerless && initTS) {
     await ensureTimeSeries();
-    startBridgeHeartbeat();
+    startBridgeHeartbeat(); // só em ambiente persistente
   }
 }
 
-// ---- Start local (NÃO roda no Vercel) ----
-if (!process.env.VERCEL && !process.env.NOW_REGION) {
+// Handler default para Vercel (precisa ser função)
+export default async function handler(req, res) {
+  try {
+    if (!bootPromise) bootPromise = boot();
+    await bootPromise;
+    return app(req, res);
+  } catch (e) {
+    console.error("Boot/handler error:", e);
+    res.statusCode = 500;
+    res.end("Internal server error");
+  }
+}
+
+// ---- Start local (apenas fora da Vercel) ----
+if (!isServerless) {
   const PORT = process.env.PORT || 4000;
-  boot()
-    .then(() => {
+  (async () => {
+    try {
+      if (!bootPromise) bootPromise = boot();
+      await bootPromise;
       app.listen(PORT, () => console.log(`API listening on :${PORT}`));
-    })
-    .catch((e) => {
+    } catch (e) {
       console.error("Fatal boot error:", e);
       process.exit(1);
-    });
+    }
+  })();
 }
