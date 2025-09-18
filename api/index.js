@@ -1,7 +1,8 @@
 // api/index.js
-import handler, { boot } from "../src/app.js";
+import app, { boot } from "../src/app.js";
+import handler from "./heartbeat.js";
 
-// garante conexão no cold start
+// Garante que conecta no banco antes de responder
 await boot();
 
-export default handler; // <-- exporta a função default do app
+export default handler;
