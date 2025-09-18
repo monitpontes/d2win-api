@@ -85,34 +85,38 @@ async function boot() {
   const initTS = (process.env.INIT_TIMESERIES || "false").toLowerCase() === "true";
   if (!isServerless && initTS) {
     await ensureTimeSeries();
-    startBridgeHeartbeat(); // só em ambiente persistente
+  }
+
+  const startHB = (process.env.START_HEARTBEAT || "true").toLowerCase() === "true";
+  if (!isServerless && startHB) {
+    startBridgeHeartbeat();
   }
 }
 
-// Handler default para Vercel (precisa ser função)
-export default async function handler(req, res) {
-  try {
-    if (!bootPromise) bootPromise = boot();
-    await bootPromise;
-    return app(req, res);
-  } catch (e) {
-    console.error("Boot/handler error:", e);
-    res.statusCode = 500;
-    res.end("Internal server error");
-  }
-}
-
-// ---- Start local (apenas fora da Vercel) ----
-if (!isServerless) {
-  const PORT = process.env.PORT || 4000;
-  (async () => {
+  // Handler default para Vercel (precisa ser função)
+  export default async function handler(req, res) {
     try {
       if (!bootPromise) bootPromise = boot();
       await bootPromise;
-      app.listen(PORT, () => console.log(`API listening on :${PORT}`));
+      return app(req, res);
     } catch (e) {
-      console.error("Fatal boot error:", e);
-      process.exit(1);
+      console.error("Boot/handler error:", e);
+      res.statusCode = 500;
+      res.end("Internal server error");
     }
-  })();
-}
+  }
+
+  // ---- Start local (apenas fora da Vercel) ----
+  if (!isServerless) {
+    const PORT = process.env.PORT || 4000;
+    (async () => {
+      try {
+        if (!bootPromise) bootPromise = boot();
+        await bootPromise;
+        app.listen(PORT, () => console.log(`API listening on :${PORT}`));
+      } catch (e) {
+        console.error("Fatal boot error:", e);
+        process.exit(1);
+      }
+    })();
+  }
