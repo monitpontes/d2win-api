@@ -1,7 +1,7 @@
 // api/index.js
-import app, { boot } from "../src/app.js";
+import handler, { boot } from "../src/app.js";
 
-// Garante que conecta no banco antes de responder
+// garante conexão no cold start
 await boot();
 
-export default app;
+export default handler; // <-- exporta a função default do app
