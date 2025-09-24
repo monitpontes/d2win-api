@@ -1,8 +1,12 @@
 // src/routes/companies.js
 import express from "express";
 import Company from "../models/company.js";
+import { authenticateToken } from "../middleware/auth.js";
 
 const router = express.Router();
+
+// Middleware para autenticação em todas as rotas deste arquivo
+router.use(authenticateToken);
 
 // GET /companies - Listar todas as empresas
 router.get("/", async (req, res) => {
