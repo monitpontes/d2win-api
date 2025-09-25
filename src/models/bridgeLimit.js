@@ -1,5 +1,6 @@
 
 import mongoose from "mongoose";
+
 const BridgeLimitSchema = new mongoose.Schema(
   {
     company_id: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true },
@@ -11,5 +12,6 @@ const BridgeLimitSchema = new mongoose.Schema(
   },
   { timestamps: true, collection: "bridge_limits" }
 );
-BridgeLimitSchema.index({ bridge_id: 1 }, { unique: true });
+BridgeLimitSchema.index({ company_id: 1, bridge_id: 1 }, { unique: true });
+
 export default mongoose.model("BridgeLimit", BridgeLimitSchema);
