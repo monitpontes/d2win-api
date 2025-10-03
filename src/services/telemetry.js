@@ -194,22 +194,56 @@ function idVariants(id) {
 }
 
 /**
- * Agrupa por meta.device_id pegando o documento mais novo (ts desc).
+ * Agrupa por meta.device_id pegando o doc mais novo (por ts desc),
+ * usando sort compatível com o índice e opt-in para spill to disk.
  * @param {string} collectionName
- * @param {object} matchQuery
+ * @param {object} matchQuery  // ex.: { "meta.company_id": {$in:[...]}, "meta.device_id": {$in:[...]} }
  * @returns Map<device_id(string), doc>
  */
 async function latestPerDevice(collectionName, matchQuery) {
   const coll = mongoose.connection.db.collection(collectionName);
+
+  // Descobre se o filtro é por empresa ou por ponte para montar sort + hint que batem com os índices
+  const byCompany = Object.prototype.hasOwnProperty.call(matchQuery, "meta.company_id");
+  const byBridge  = Object.prototype.hasOwnProperty.call(matchQuery, "meta.bridge_id");
+
+  // Sort alinhado ao índice:
+  //   company: { meta.company_id:1, meta.device_id:1, ts:-1 }
+  //   bridge:  { meta.bridge_id:1,  meta.device_id:1, ts:-1 }
+  const sortStage = byCompany
+    ? { "meta.company_id": 1, "meta.device_id": 1, ts: -1 }
+    : { "meta.bridge_id": 1,  "meta.device_id": 1, ts: -1 };
+
+  // Hint do índice correspondente (se aplicável)
+  let hint;
+  if (byCompany) {
+    hint = { "meta.company_id": 1, "meta.device_id": 1, ts: -1 };
+  } else if (byBridge) {
+    hint = { "meta.bridge_id": 1, "meta.device_id": 1, ts: -1 };
+  }
+
   const pipeline = [
     { $match: matchQuery },
-    { $sort: { ts: -1 } },
+    { $sort: sortStage },
     { $group: { _id: "$meta.device_id", doc: { $first: "$$ROOT" } } },
   ];
-  const rows = await coll.aggregate(pipeline, { allowDiskUse: true }).toArray();
-  const map = new Map();
-  for (const r of rows) map.set(String(r._id), r.doc);
-  return map;
+
+  try {
+    const cursor = hint
+      ? coll.aggregate(pipeline, { allowDiskUse: true, hint })
+      : coll.aggregate(pipeline, { allowDiskUse: true });
+
+    const rows = await cursor.toArray();
+    const map = new Map();
+    for (const r of rows) map.set(String(r._id), r.doc);
+    return map;
+  } catch (err) {
+    // fallback sem hint (alguns planos/versões rejeitam hint em aggregate)
+    const rows = await coll.aggregate(pipeline, { allowDiskUse: true }).toArray();
+    const map = new Map();
+    for (const r of rows) map.set(String(r._id), r.doc);
+    return map;
+  }
 }
 
 /**
