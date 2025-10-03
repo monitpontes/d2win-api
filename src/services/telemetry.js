@@ -7,7 +7,7 @@ import { toBrazilISOFromUTC, brazilPartsFromUTC } from "../lib/time.js";
 /** Coleções cruas (time-series) usadas via driver nativo */
 const ACCEL = "telemetry_ts_accel";
 const FREQ  = "telemetry_ts_freq_peaks";
-//const STAT  = "telemetry_ts_device_status";
+const STAT  = "telemetry_ts_device_status"; // opcional, use se quiser histórico de status
 
 /* =====================================================================
  * INSERÇÕES DE TELEMETRIA (com ts UTC e ts_br obrigatório)
@@ -82,7 +82,7 @@ export async function insertDeviceStatus({
   return mongoose.connection.db.collection(STAT).insertOne(doc);
 }
 
-/** Helper opcional: atualiza last_seen do device ao receber telemetria */
+/** Atualiza last_seen do device ao receber telemetria (opcional) */
 export async function touchDeviceLastSeen(device_id, infos = undefined) {
   const set = { last_seen: new Date() };
   if (infos && typeof infos === "object") set.infos = infos;
@@ -90,7 +90,7 @@ export async function touchDeviceLastSeen(device_id, infos = undefined) {
 }
 
 /* =====================================================================
- * SNAPSHOT POR PONTE (UM DOCUMENTO POR bridge_id)
+ * HEARTBEAT / SNAPSHOT POR PONTE (UM DOCUMENTO POR bridge_id)
  * ===================================================================*/
 
 /**
@@ -121,7 +121,8 @@ export async function updateBridgeStatusFor(bridgeId, companyId) {
 
   // busca devices dessa ponte/empresa
   const devices = await Device.find({ bridge_id: bridgeId, company_id: companyId })
-                              .select("device_id last_seen infos");
+                              .select("device_id last_seen infos")
+                              .lean();
 
   // prepara linhas
   const rows = devices.map(d => {
@@ -166,10 +167,7 @@ export async function updateBridgeStatusFor(bridgeId, companyId) {
   return { ok: true, bridge_id: bridgeId, company_id: companyId, summary };
 }
 
-/**
- * Varre todas as pontes existentes (agrupando devices)
- * e atualiza os snapshots.
- */
+/** Varre todas as pontes existentes e atualiza os snapshots. */
 export async function updateAllBridgeStatuses() {
   const pairs = await Device.aggregate([
     { $group: { _id: { company_id: "$company_id", bridge_id: "$bridge_id" } } }
@@ -183,3 +181,191 @@ export async function updateAllBridgeStatuses() {
   }
   return results;
 }
+
+/* =====================================================================
+ * "LATEST" – ÚLTIMOS VALORES POR EMPRESA / PONTE (p/ Dashboard & Bridge Page)
+ * ===================================================================*/
+
+/** Tenta casar tanto string quanto ObjectId (robusto para dados mistos) */
+function idVariants(id) {
+  const list = [String(id)];
+  try { list.push(new mongoose.Types.ObjectId(id)); } catch {}
+  return list;
+}
+
+/**
+ * Agrupa por meta.device_id pegando o documento mais novo (ts desc).
+ * @param {string} collectionName
+ * @param {object} matchQuery
+ * @returns Map<device_id(string), doc>
+ */
+async function latestPerDevice(collectionName, matchQuery) {
+  const coll = mongoose.connection.db.collection(collectionName);
+  const pipeline = [
+    { $match: matchQuery },
+    { $sort: { ts: -1 } },
+    { $group: { _id: "$meta.device_id", doc: { $first: "$$ROOT" } } },
+  ];
+  const rows = await coll.aggregate(pipeline, { allowDiskUse: true }).toArray();
+  const map = new Map();
+  for (const r of rows) map.set(String(r._id), r.doc);
+  return map;
+}
+
+/**
+ * Últimos valores para TODOS os devices da empresa.
+ * Retorna: { company_id, updated_at, devices: [ { device_id, bridge_id, modo_operacao, status, last_seen, accel, freq, ... } ] }
+ */
+export async function latestByCompany(companyId) {
+  const variants = idVariants(companyId);
+
+  // busca devices ativos da empresa
+  const devs = await Device.find({ company_id: { $in: variants }, isActive: { $ne: false } })
+    .select("device_id bridge_id company_id modo_operacao last_seen params_current isActive")
+    .lean();
+
+  // Na sua TS você grava meta.device_id com o TEXTUAL device_id
+  const deviceCodes = devs.map(d => String(d.device_id));
+
+  // Query por empresa + device_id textual
+  const accelMap = await latestPerDevice(ACCEL, { "meta.company_id": { $in: variants }, "meta.device_id": { $in: deviceCodes } });
+  const freqMap  = await latestPerDevice(FREQ,  { "meta.company_id": { $in: variants }, "meta.device_id": { $in: deviceCodes } });
+
+  const now = Date.now();
+  const items = devs.map(d => {
+    const k = String(d.device_id);
+    const accel = accelMap.get(k) || null;
+    const freq  = freqMap.get(k)  || null;
+    const status = classify(d.last_seen, now);
+
+    return {
+      device_id: d.device_id,
+      bridge_id: d.bridge_id,
+      company_id: d.company_id,
+      modo_operacao: d.modo_operacao || "aceleracao",
+      last_seen: d.last_seen || null,
+      status,
+      params_current: d.params_current || {},
+      isActive: d.isActive !== false,
+
+      // aceleração (ajuste os campos conforme seus docs)
+      accel: accel
+        ? {
+            ts: accel.ts,
+            // campos comuns—ajuste conforme você grava:
+            value: accel.value ?? null,           // m/s2 instantâneo (se usa stream accel:z)
+            rms:   accel.rms   ?? accel?.metrics?.rms ?? null,
+            ax:    accel.ax    ?? null,
+            ay:    accel.ay    ?? null,
+            az:    accel.az    ?? null,
+          }
+        : null,
+
+      // frequência (picos/dominante)
+      freq: freq
+        ? {
+            ts: freq.ts,
+            status: freq.status ?? null,          // "atividade_detectada" | "sem_atividade"
+            fs: freq.fs ?? null,
+            n:  freq.n ?? null,
+            peak:     freq.peak     ?? freq?.metrics?.peak ?? null,
+            dom_freq: freq.dom_freq ?? freq?.metrics?.dom_freq ?? null,
+            peaks:    freq.peaks    ?? freq?.metrics?.peaks ?? null,
+          }
+        : null,
+    };
+  });
+
+  return {
+    company_id: companyId,
+    updated_at: new Date(),
+    devices: items,
+  };
+}
+
+/**
+ * Últimos valores para TODOS os devices de uma ponte.
+ * Retorna: { bridge_id, company_ids, updated_at, devices: [...] }
+ */
+export async function latestByBridge(bridgeId) {
+  const variants = idVariants(bridgeId);
+
+  const devs = await Device.find({ bridge_id: { $in: variants }, isActive: { $ne: false } })
+    .select("device_id bridge_id company_id modo_operacao last_seen params_current isActive")
+    .lean();
+
+  if (devs.length === 0) {
+    return { bridge_id: bridgeId, company_ids: [], updated_at: new Date(), devices: [] };
+  }
+
+  const companyIds = [...new Set(devs.map(d => String(d.company_id)))];
+  const deviceCodes = devs.map(d => String(d.device_id));
+
+  // match por bridge_id + device_id textual
+  const accelMap = await latestPerDevice(ACCEL, { "meta.bridge_id": { $in: variants }, "meta.device_id": { $in: deviceCodes } });
+  const freqMap  = await latestPerDevice(FREQ,  { "meta.bridge_id": { $in: variants }, "meta.device_id": { $in: deviceCodes } });
+
+  const now = Date.now();
+  const items = devs.map(d => {
+    const k = String(d.device_id);
+    const accel = accelMap.get(k) || null;
+    const freq  = freqMap.get(k)  || null;
+    const status = classify(d.last_seen, now);
+
+    return {
+      device_id: d.device_id,
+      bridge_id: d.bridge_id,
+      company_id: d.company_id,
+      modo_operacao: d.modo_operacao || "aceleracao",
+      last_seen: d.last_seen || null,
+      status,
+      params_current: d.params_current || {},
+      isActive: d.isActive !== false,
+      accel: accel
+        ? {
+            ts: accel.ts,
+            value: accel.value ?? null,
+            rms:   accel.rms   ?? accel?.metrics?.rms ?? null,
+            ax:    accel.ax    ?? null,
+            ay:    accel.ay    ?? null,
+            az:    accel.az    ?? null,
+          }
+        : null,
+      freq: freq
+        ? {
+            ts: freq.ts,
+            status: freq.status ?? null,
+            fs: freq.fs ?? null,
+            n:  freq.n ?? null,
+            peak:     freq.peak     ?? freq?.metrics?.peak ?? null,
+            dom_freq: freq.dom_freq ?? freq?.metrics?.dom_freq ?? null,
+            peaks:    freq.peaks    ?? freq?.metrics?.peaks ?? null,
+          }
+        : null,
+    };
+  });
+
+  return {
+    bridge_id: bridgeId,
+    company_ids: companyIds,
+    updated_at: new Date(),
+    devices: items,
+  };
+}
+
+/* =====================================================================
+ * DICAS DE ÍNDICE (adicione nos schemas das TS para performance)
+ * =====================================================================
+
+Em cada coleção ts* (se você tiver Schema/Model), crie índices:
+
+schema.index({ "meta.company_id": 1, "meta.device_id": 1, ts: -1 });
+schema.index({ "meta.bridge_id": 1,  "meta.device_id": 1, ts: -1 });
+
+Se usa as coleções só via driver (como aqui), crie-os via shell/CLI:
+db.telemetry_ts_accel.createIndex({ "meta.company_id": 1, "meta.device_id": 1, ts: -1 })
+db.telemetry_ts_accel.createIndex({ "meta.bridge_id": 1,  "meta.device_id": 1, ts: -1 })
+db.telemetry_ts_freq_peaks.createIndex({ "meta.company_id": 1, "meta.device_id": 1, ts: -1 })
+db.telemetry_ts_freq_peaks.createIndex({ "meta.bridge_id": 1,  "meta.device_id": 1, ts: -1 })
+
+===================================================================== */
