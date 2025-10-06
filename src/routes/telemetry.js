@@ -5,6 +5,7 @@ import {
   updateBridgeStatusFor,
   latestByCompany,
   latestByBridge,
+  historyByBridge,
 } from "../services/telemetry.js";
 import BridgeStatus from "../models/bridgeStatus.js"; // opcional: para GET do snapshot
 
@@ -72,3 +73,14 @@ router.get("/latest/bridge/:bridgeId", async (req, res, next) => {
 });
 
 export default router;
+
+// NOVO – histórico curto por ponte (para “semear” o gráfico)
+router.get("/history/bridge/:bridgeId", async (req, res, next) => {
+  try {
+    const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 10));
+    const data = await historyByBridge(req.params.bridgeId, limit);
+    res.json(data);
+  } catch (e) {
+    next(e);
+  }
+});

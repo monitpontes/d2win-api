@@ -300,3 +300,58 @@ export async function latestByBridge(bridgeId) {
 
   return { bridge_id: bridgeId, company_ids: companyIds, updated_at: new Date(), devices: items };
 }
+
+// --- NOVO: últimos N pontos por device/stream de uma ponte ---
+async function lastNPerDevice(collectionName, matchQuery, limit = 10) {
+  const coll = mongoose.connection.db.collection(collectionName);
+  // pega os "limit" mais recentes por device, e projeta em ordem cronológica
+  const pipeline = [
+    { $match: matchQuery },
+    { $sort: { "meta.device_id": 1, ts: -1 } },
+    { $group: {
+        _id: "$meta.device_id",
+        docsDesc: { $push: "$$ROOT" }
+    }},
+    { $project: {
+        _id: 0,
+        device_id: "$_id",
+        docs: { $slice: ["$docsDesc", limit] }
+    }},
+    // volta para ordem ASC de tempo para o gráfico
+    { $project: {
+        device_id: 1,
+        docs: { $reverseArray: "$docs" }
+    }}
+  ];
+  const arr = await coll.aggregate(pipeline, { allowDiskUse: true }).toArray();
+  const map = new Map();
+  for (const r of arr) map.set(String(r.device_id), r.docs);
+  return map;
+}
+
+export async function historyByBridge(bridgeId, limit = 10) {
+  const variants = idVariants(bridgeId);
+
+  const devs = await Device.find({ bridge_id: { $in: variants }, isActive: { $ne: false } })
+    .select("device_id modo_operacao")
+    .lean();
+
+  if (devs.length === 0) {
+    return { bridge_id: bridgeId, items: [] };
+  }
+
+  const deviceCodes = devs.map(d => String(d.device_id));
+
+  const accelMap = await lastNPerDevice(ACCEL, { "meta.bridge_id": { $in: variants }, "meta.device_id": { $in: deviceCodes } }, limit);
+  const freqMap  = await lastNPerDevice(FREQ,  { "meta.bridge_id": { $in: variants }, "meta.device_id": { $in: deviceCodes } }, limit);
+
+  const items = devs.map(d => {
+    const id = String(d.device_id);
+    const accel = accelMap.get(id) || [];
+    const freq  = freqMap.get(id)  || [];
+    return { device_id: id, accel, freq };
+  });
+
+  return { bridge_id: bridgeId, items };
+}
+
