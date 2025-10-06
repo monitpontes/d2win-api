@@ -72,8 +72,6 @@ router.get("/latest/bridge/:bridgeId", async (req, res, next) => {
   }
 });
 
-export default router;
-
 // NOVO – histórico curto por ponte (para “semear” o gráfico)
 router.get("/history/bridge/:bridgeId", async (req, res, next) => {
   try {
@@ -84,3 +82,5 @@ router.get("/history/bridge/:bridgeId", async (req, res, next) => {
     next(e);
   }
 });
+
+export default router;
