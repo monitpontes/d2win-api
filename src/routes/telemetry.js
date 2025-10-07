@@ -7,7 +7,7 @@ import {
   latestByBridge,
   historyByBridge,
 } from "../services/telemetry.js";
-import BridgeStatus from "../models/bridgeStatus.js"; // opcional: para GET do snapshot
+import BridgeStatus from "../models/bridgeStatus.js"; // opcional
 
 const router = Router();
 
@@ -15,7 +15,6 @@ const router = Router();
  * HEARTBEAT / SNAPSHOT
  * ===========================*/
 
-// Dispara rebuild de snapshot para TODAS as pontes (varre devices agrupados)
 router.post("/bridge-status/run", async (_req, res, next) => {
   try {
     const out = await updateAllBridgeStatuses();
@@ -25,7 +24,6 @@ router.post("/bridge-status/run", async (_req, res, next) => {
   }
 });
 
-// Dispara rebuild do snapshot para UMA ponte específica
 router.post("/bridge-status/:companyId/:bridgeId/run", async (req, res, next) => {
   try {
     const { companyId, bridgeId } = req.params;
@@ -36,7 +34,6 @@ router.post("/bridge-status/:companyId/:bridgeId/run", async (req, res, next) =>
   }
 });
 
-// (Opcional) Lê o snapshot salvo (sem recalcular) — útil para telas rápidas
 router.get("/bridge-status/:companyId/:bridgeId", async (req, res, next) => {
   try {
     const { companyId, bridgeId } = req.params;
@@ -49,10 +46,9 @@ router.get("/bridge-status/:companyId/:bridgeId", async (req, res, next) => {
 });
 
 /* ===========================
- * LATEST (para Dashboard e Bridge Page)
+ * LATEST
  * ===========================*/
 
-// Últimos valores (accel/freq) + modo_operacao + status active|stale|offline para TODOS os devices da empresa
 router.get("/latest/company/:companyId", async (req, res, next) => {
   try {
     const data = await latestByCompany(req.params.companyId);
@@ -62,7 +58,6 @@ router.get("/latest/company/:companyId", async (req, res, next) => {
   }
 });
 
-// Últimos valores (accel/freq) + modo_operacao + status para TODOS os devices de UMA ponte
 router.get("/latest/bridge/:bridgeId", async (req, res, next) => {
   try {
     const data = await latestByBridge(req.params.bridgeId);
@@ -72,7 +67,10 @@ router.get("/latest/bridge/:bridgeId", async (req, res, next) => {
   }
 });
 
-// NOVO – histórico curto por ponte (para “semear” o gráfico)
+/* ===========================
+ * HISTORY (para o gráfico)
+ * ===========================*/
+
 router.get("/history/bridge/:bridgeId", async (req, res, next) => {
   try {
     const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 10));
