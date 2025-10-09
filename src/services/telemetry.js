@@ -10,6 +10,35 @@ const FREQ  = "telemetry_ts_freq_peaks";
 const STAT  = "telemetry_ts_device_status"; // opcional
 
 /* =====================================================================
+ * 🔧 Configs de proteção/limites (ADICIONADO)
+ * ===================================================================*/
+const HISTORY_DEFAULT_N = Number(process.env.HISTORY_DEFAULT_N || 10);  // últimos 10 p/ history
+const DEVICE_HARD_CAP   = Number(process.env.DEVICE_HARD_CAP   || 2000);
+const QUERY_MAX_MS      = Number(process.env.QUERY_MAX_MS      || 3000);
+
+// projeções mínimas p/ reduzir bytes processados
+const ACCEL_PROJECT_MIN = {
+  _id: 0,
+  ts: 1,
+  value: 1, rms: 1, ax: 1, ay: 1, az: 1, severity: 1,
+  "meta.device_id": 1,
+  "meta.severity": 1,
+  // campos extras comuns:
+  fw: 1, units: 1
+};
+
+const FREQ_PROJECT_MIN = {
+  _id: 0,
+  ts: 1,
+  status: 1, fs: 1, n: 1,
+  peak: 1, dom_freq: 1, peaks: 1, severity: 1,
+  "metrics.peak": 1, "metrics.dom_freq": 1, "metrics.peaks": 1,
+  "meta.device_id": 1,
+  "meta.severity": 1,
+  fw: 1
+};
+
+/* =====================================================================
  * INSERÇÕES DE TELEMETRIA
  * ===================================================================*/
 
@@ -161,8 +190,18 @@ function getHintFor(matchQuery) {
   return undefined;
 }
 
+// ⚠️ ADICIONADO: hard cap de devices por requisição
+function clampDeviceIds(deviceIds = []) {
+  if (!Array.isArray(deviceIds)) return [];
+  if (deviceIds.length > DEVICE_HARD_CAP) {
+    return deviceIds.slice(0, DEVICE_HARD_CAP);
+  }
+  return deviceIds;
+}
+
 async function latestPerDevice(collectionName, matchQuery) {
   const coll = mongoose.connection.db.collection(collectionName);
+
   const byCompany = Object.prototype.hasOwnProperty.call(matchQuery, "meta.company_id");
   const byBridge  = Object.prototype.hasOwnProperty.call(matchQuery, "meta.bridge_id");
 
@@ -172,22 +211,33 @@ async function latestPerDevice(collectionName, matchQuery) {
 
   const hint = getHintFor(matchQuery);
 
+  // 🔎 Projeção mínima + limit de segurança (ADICIONADO)
+  const projectMin = collectionName === ACCEL ? ACCEL_PROJECT_MIN : FREQ_PROJECT_MIN;
+
   const pipeline = [
     { $match: matchQuery },
     { $sort: sortStage },
     { $group: { _id: "$meta.device_id", doc: { $first: "$$ROOT" } } },
+    { $project: { _id: 0, doc: projectMin } },
+    { $limit: DEVICE_HARD_CAP } // segurança contra grupos excessivos
   ];
 
   try {
-    const cursor = coll.aggregate(pipeline, { allowDiskUse: true, hint });
+    const cursor = coll.aggregate(pipeline, { allowDiskUse: false, hint, maxTimeMS: QUERY_MAX_MS });
     const rows = await cursor.toArray();
     const map = new Map();
-    for (const r of rows) map.set(String(r._id), r.doc);
+    for (const r of rows) {
+      const dev = r.doc?.meta?.device_id ?? r._id;
+      map.set(String(dev), r.doc);
+    }
     return map;
   } catch {
-    const rows = await coll.aggregate(pipeline, { allowDiskUse: true }).toArray();
+    const rows = await coll.aggregate(pipeline, { allowDiskUse: false }).toArray();
     const map = new Map();
-    for (const r of rows) map.set(String(r._id), r.doc);
+    for (const r of rows) {
+      const dev = r.doc?.meta?.device_id ?? r._id;
+      map.set(String(dev), r.doc);
+    }
     return map;
   }
 }
@@ -311,6 +361,12 @@ export async function latestByBridge(bridgeId) {
 // caindo para consultas por device se não houver suporte no cluster.
 async function lastNPerDevice(collectionName, matchQuery, limit = 10, deviceIds = []) {
   const coll = mongoose.connection.db.collection(collectionName);
+
+  // ⚠️ cap de devices (ADICIONADO)
+  if (Array.isArray(deviceIds)) {
+    deviceIds = clampDeviceIds(deviceIds);
+  }
+
   const hint = getHintFor(matchQuery);
 
   // 1) Tenta $topN (MongoDB >= 5.2)
@@ -319,16 +375,43 @@ async function lastNPerDevice(collectionName, matchQuery, limit = 10, deviceIds 
     {
       $group: {
         _id: "$meta.device_id",
-        docs: { $topN: { sortBy: { ts: -1 }, output: "$$ROOT", n: limit } }
+        docs: { $topN: { sortBy: { ts: -1 }, output: "$$ROOT", n: Math.min(Number(limit || HISTORY_DEFAULT_N), HISTORY_DEFAULT_N) } }
       }
     },
-    { $project: { _id: 0, device_id: "$_id", docs: { $reverseArray: "$docs" } } }
+    // devolver em ordem cronológica crescente
+    { $project: { _id: 0, device_id: "$_id", docs: { $reverseArray: "$docs" } } },
+    { $limit: DEVICE_HARD_CAP } // segurança
   ];
 
   try {
-    const arr = await coll.aggregate(pipelineTopN, { allowDiskUse: true, hint }).toArray();
+    const arr = await coll.aggregate(pipelineTopN, {
+      allowDiskUse: false,
+      hint,
+      maxTimeMS: QUERY_MAX_MS
+    }).toArray();
+
     const map = new Map();
-    for (const r of arr) map.set(String(r.device_id), r.docs);
+    for (const r of arr) {
+      // projeção mínima por documento (aplicada após seleção)
+      r.docs = r.docs.map(d => {
+        if (collectionName === ACCEL) {
+          const { ts, value, rms, ax, ay, az, severity, meta, fw, units } = d;
+          return { ts, value, rms, ax, ay, az, severity, meta: { device_id: meta?.device_id, severity: meta?.severity }, fw, units };
+        } else {
+          const { ts, status, fs, n, peak, dom_freq, peaks, severity, metrics, meta, fw } = d;
+          return {
+            ts, status, fs, n,
+            peak: peak ?? metrics?.peak,
+            dom_freq: dom_freq ?? metrics?.dom_freq,
+            peaks: peaks ?? metrics?.peaks,
+            severity,
+            meta: { device_id: meta?.device_id, severity: meta?.severity },
+            fw
+          };
+        }
+      });
+      map.set(String(r.device_id), r.docs);
+    }
     return map;
   } catch (errTopN) {
     // 2) Fallback: janela (MongoDB >= 5.0)
@@ -341,16 +424,41 @@ async function lastNPerDevice(collectionName, matchQuery, limit = 10, deviceIds 
           output: { rk: { $documentNumber: {} } }
         }
       },
-      { $match: { rk: { $lte: limit } } },
+      { $match: { rk: { $lte: Math.min(Number(limit || HISTORY_DEFAULT_N), HISTORY_DEFAULT_N) } } },
       { $sort: { "meta.device_id": 1, ts: 1 } }, // voltar cronológico
       { $group: { _id: "$meta.device_id", docs: { $push: "$$ROOT" } } },
-      { $project: { _id: 0, device_id: "$_id", docs: 1 } }
+      { $project: { _id: 0, device_id: "$_id", docs: 1 } },
+      { $limit: DEVICE_HARD_CAP }
     ];
 
     try {
-      const arr = await coll.aggregate(pipelineWindow, { allowDiskUse: true, hint }).toArray();
+      const arr = await coll.aggregate(pipelineWindow, {
+        allowDiskUse: false,
+        hint,
+        maxTimeMS: QUERY_MAX_MS
+      }).toArray();
+
       const map = new Map();
-      for (const r of arr) map.set(String(r.device_id), r.docs);
+      for (const r of arr) {
+        r.docs = r.docs.map(d => {
+          if (collectionName === ACCEL) {
+            const { ts, value, rms, ax, ay, az, severity, meta, fw, units } = d;
+            return { ts, value, rms, ax, ay, az, severity, meta: { device_id: meta?.device_id, severity: meta?.severity }, fw, units };
+          } else {
+            const { ts, status, fs, n, peak, dom_freq, peaks, severity, metrics, meta, fw } = d;
+            return {
+              ts, status, fs, n,
+              peak: peak ?? metrics?.peak,
+              dom_freq: dom_freq ?? metrics?.dom_freq,
+              peaks: peaks ?? metrics?.peaks,
+              severity,
+              meta: { device_id: meta?.device_id, severity: meta?.severity },
+              fw
+            };
+          }
+        });
+        map.set(String(r.device_id), r.docs);
+      }
       return map;
     } catch (errWindow) {
       // 3) Fallback final: 1 find por device (compatível com qualquer versão)
@@ -359,13 +467,15 @@ async function lastNPerDevice(collectionName, matchQuery, limit = 10, deviceIds 
         : await coll.distinct("meta.device_id", matchQuery);
 
       const map = new Map();
-      for (const id of ids) {
-        const docsDesc = await coll
-          .find({ ...matchQuery, "meta.device_id": id })
+      for (const id of clampDeviceIds(ids)) {
+        const cursor = coll
+          .find({ ...matchQuery, "meta.device_id": id }, { projection: collectionName === ACCEL ? ACCEL_PROJECT_MIN : FREQ_PROJECT_MIN })
           .sort({ ts: -1 })
-          .limit(limit)
+          .limit(Math.min(Number(limit || HISTORY_DEFAULT_N), HISTORY_DEFAULT_N))
           .hint(hint || { "meta.device_id": 1, ts: -1 })
-          .toArray();
+          .maxTimeMS(QUERY_MAX_MS);
+
+        const docsDesc = await cursor.toArray();
         map.set(String(id), docsDesc.reverse());
       }
       return map;
@@ -373,7 +483,10 @@ async function lastNPerDevice(collectionName, matchQuery, limit = 10, deviceIds 
   }
 }
 
-export async function historyByBridge(bridgeId, limit = 10) {
+export async function historyByBridge(bridgeId, limit = HISTORY_DEFAULT_N) {
+  // força limite máximo = HISTORY_DEFAULT_N (últimos 10) conforme pedido
+  limit = Math.min(Number(limit || HISTORY_DEFAULT_N), HISTORY_DEFAULT_N);
+
   const variants = idVariants(bridgeId);
 
   const devs = await Device.find({ bridge_id: { $in: variants }, isActive: { $ne: false } })
@@ -408,4 +521,22 @@ export async function historyByBridge(bridgeId, limit = 10) {
   });
 
   return { bridge_id: bridgeId, items };
+}
+
+/* =====================================================================
+ * (ADICIONADO) Garante índices que casam com as consultas
+ * ===================================================================*/
+export async function ensureTelemetryIndexes() {
+  const db = mongoose.connection.db;
+
+  // Índices para latest por ponte e por empresa (sort por ts desc no sufixo)
+  await db.collection(ACCEL).createIndex({ "meta.bridge_id": 1,  "meta.device_id": 1, ts: -1 });
+  await db.collection(ACCEL).createIndex({ "meta.company_id": 1, "meta.device_id": 1, ts: -1 });
+
+  await db.collection(FREQ ).createIndex({ "meta.bridge_id": 1,  "meta.device_id": 1, ts: -1 });
+  await db.collection(FREQ ).createIndex({ "meta.company_id": 1, "meta.device_id": 1, ts: -1 });
+
+  // (Opcional) índices simples por device+ts para fallback
+  await db.collection(ACCEL).createIndex({ "meta.device_id": 1, ts: -1 });
+  await db.collection(FREQ ).createIndex({ "meta.device_id": 1, ts: -1 });
 }

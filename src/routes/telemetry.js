@@ -46,7 +46,7 @@ router.get("/bridge-status/:companyId/:bridgeId", async (req, res, next) => {
 });
 
 /* ===========================
- * LATEST
+ * LATEST (último dado por ponte/empresa)
  * ===========================*/
 
 router.get("/latest/company/:companyId", async (req, res, next) => {
@@ -68,14 +68,24 @@ router.get("/latest/bridge/:bridgeId", async (req, res, next) => {
 });
 
 /* ===========================
- * HISTORY (para o gráfico)
+ * HISTORY (para gráficos)
  * ===========================*/
 
 router.get("/history/bridge/:bridgeId", async (req, res, next) => {
   try {
-    const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 10));
+    // 🔒 limite fixo de segurança: sempre retorna no máximo 10 registros
+    const limit = 10; // mesmo se o front mandar outro valor
     const data = await historyByBridge(req.params.bridgeId, limit);
-    res.json(data);
+
+    // ✅ impede respostas pesadas
+    if (!data || !data.items) return res.status(404).json({ ok: false, error: "sem dados recentes" });
+
+    res.json({
+      ok: true,
+      count: data.items.length,
+      limit,
+      ...data,
+    });
   } catch (e) {
     next(e);
   }
