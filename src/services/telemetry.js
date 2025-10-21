@@ -27,10 +27,13 @@ const ACCEL_PROJECT_MIN = {
   _id: 0,
   ts: 1,
   value: 1, rms: 1, ax: 1, ay: 1, az: 1, severity: 1,
+  // ✅ incluir metrics.* (espelhar o FREQ)
+  "metrics.value": 1, "metrics.rms": 1, "metrics.ax": 1, "metrics.ay": 1, "metrics.az": 1,
   "meta.device_id": 1,
   "meta.severity": 1,
   fw: 1, units: 1,
 };
+
 const FREQ_PROJECT_MIN = {
   _id: 0,
   ts: 1,
@@ -46,7 +49,6 @@ const FREQ_PROJECT_MIN = {
  * 🔒 Cache de limites por ponte (em memória)
  * ===================================================================*/
 const limitsCache = new Map(); // bridgeId -> { at, v }
-
 function numberOrNull(x, dflt = null) {
   const n = Number(x);
   return Number.isFinite(n) ? n : dflt;
@@ -62,7 +64,7 @@ const USE_FIXED_LIMITS = true;
 const FIXED_LIMITS_DEFAULT = {
   freq_alert: 3.7,
   freq_critical: 7,
-  accel_alert: 10,
+  accel_alert: 12,
   accel_critical: 20,
 };
 
@@ -80,7 +82,7 @@ async function getBridgeLimitsCached(bridgeId) {
     const v = {
       freq_alert:    numberOrNull(raw.freq_alert, 3.7),
       freq_critical: numberOrNull(raw.freq_critical, 7),
-      accel_alert:   numberOrNull(raw.accel_alert, 10),
+      accel_alert:   numberOrNull(raw.accel_alert, 12),
       accel_critical:numberOrNull(raw.accel_critical, 20),
       _source: "fixed",
     };
@@ -156,7 +158,7 @@ export async function insertAccel({
 
   const limits = await getBridgeLimitsCached(bridge_id);
 
-  // valor efetivo (preferência: rms > value > eixo resultante)
+  // valor efetivo (preferência: rms > value > vetor de eixos)
   const eff = numberOrNull(rms ?? value, null) ?? rmsFromAxes(ax, ay, az);
   const sev = severityFromValue(eff, limits.accel_alert, limits.accel_critical);
 
@@ -314,14 +316,14 @@ function getHintFor(matchQuery) {
 /** Normaliza doc de ACCEL e recalcula severidade pelo VALOR */
 function mapAccelDoc(d, limits) {
   if (!d) return null;
+  // ✅ agora com fallbacks para metrics.*
   const rms = numberOrNull(d.rms ?? d?.metrics?.rms, null);
-  const val = numberOrNull(d.value, null);
-  const ax  = numberOrNull(d.ax, null);
-  const ay  = numberOrNull(d.ay, null);
-  const az  = numberOrNull(d.az, null);
+  const val = numberOrNull(d.value ?? d?.metrics?.value, null);
+  const ax  = numberOrNull(d.ax ?? d?.metrics?.ax, null);
+  const ay  = numberOrNull(d.ay ?? d?.metrics?.ay, null);
+  const az  = numberOrNull(d.az ?? d?.metrics?.az, null);
   const eff = (rms ?? val ?? ((ax!=null||ay!=null||az!=null) ? rmsFromAxes(ax,ay,az) : null));
   const sev = severityFromValue(eff, limits.accel_alert, limits.accel_critical);
-
   return { ts: d.ts, value: val, rms, ax, ay, az, severity: sev };
 }
 
@@ -491,8 +493,18 @@ async function lastNPerDevice(collectionName, matchQuery, limit = 10, deviceIds 
     for (const r of arr) {
       r.docs = r.docs.map(d => {
         if (collectionName === ACCEL) {
-          const { ts, value, rms, ax, ay, az, severity, meta, fw, units } = d;
-          return { ts, value, rms, ax, ay, az, severity: severity ?? meta?.severity ?? "normal", meta: { device_id: meta?.device_id, severity: meta?.severity }, fw, units };
+          const { ts, value, rms, ax, ay, az, severity, metrics, meta, fw, units } = d;
+          return {
+            ts,
+            value: numberOrNull(value ?? metrics?.value, null),
+            rms:   numberOrNull(rms   ?? metrics?.rms,   null),
+            ax:    numberOrNull(ax    ?? metrics?.ax,    null),
+            ay:    numberOrNull(ay    ?? metrics?.ay,    null),
+            az:    numberOrNull(az    ?? metrics?.az,    null),
+            severity: severity ?? meta?.severity ?? "normal",
+            meta: { device_id: meta?.device_id, severity: meta?.severity },
+            fw, units
+          };
         } else {
           const { ts, status, fs, n, peak, dom_freq, peaks, severity, metrics, meta, fw } = d;
           return {
@@ -527,8 +539,18 @@ async function lastNPerDevice(collectionName, matchQuery, limit = 10, deviceIds 
       for (const r of arr) {
         r.docs = r.docs.map(d => {
           if (collectionName === ACCEL) {
-            const { ts, value, rms, ax, ay, az, severity, meta, fw, units } = d;
-            return { ts, value, rms, ax, ay, az, severity: severity ?? meta?.severity ?? "normal", meta: { device_id: meta?.device_id, severity: meta?.severity }, fw, units };
+            const { ts, value, rms, ax, ay, az, severity, metrics, meta, fw, units } = d;
+            return {
+              ts,
+              value: numberOrNull(value ?? metrics?.value, null),
+              rms:   numberOrNull(rms   ?? metrics?.rms,   null),
+              ax:    numberOrNull(ax    ?? metrics?.ax,    null),
+              ay:    numberOrNull(ay    ?? metrics?.ay,    null),
+              az:    numberOrNull(az    ?? metrics?.az,    null),
+              severity: severity ?? meta?.severity ?? "normal",
+              meta: { device_id: meta?.device_id, severity: meta?.severity },
+              fw, units
+            };
           } else {
             const { ts, status, fs, n, peak, dom_freq, peaks, severity, metrics, meta, fw } = d;
             return {

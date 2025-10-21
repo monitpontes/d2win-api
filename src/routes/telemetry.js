@@ -77,7 +77,6 @@ router.get("/history/bridge/:bridgeId", async (req, res, next) => {
     const limit = 10; // mesmo se o front mandar outro valor
     const data = await historyByBridge(req.params.bridgeId, limit);
 
-    // ✅ impede respostas pesadas
     if (!data || !data.items) return res.status(404).json({ ok: false, error: "sem dados recentes" });
 
     res.json({
