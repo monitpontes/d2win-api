@@ -63,7 +63,7 @@ const USE_FIXED_LIMITS = true;
 const FIXED_LIMITS_DEFAULT = {
   freq_alert: 3.7,
   freq_critical: 7,
-  accel_alert: 10,
+  accel_alert: 12,
   accel_critical: 20,
 };
 
