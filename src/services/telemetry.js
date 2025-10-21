@@ -19,10 +19,10 @@ const HISTORY_DEFAULT_N = Number(process.env.HISTORY_DEFAULT_N || 10);  // últi
 const DEVICE_HARD_CAP   = Number(process.env.DEVICE_HARD_CAP   || 2000);
 const QUERY_MAX_MS      = Number(process.env.QUERY_MAX_MS      || 3000);
 
-// TTL do cache de limites (padrão: 24h). Mantemos mesmo com limite fixo para não mudar a estrutura.
+// TTL do cache de limites (mesmo com modo FIXED, mantemos estrutura)
 const LIMITS_TTL_MS     = Number(process.env.BRIDGE_LIMITS_TTL_MS || (24 * 60 * 60 * 1000));
 
-// projeções mínimas (reduz bytes processados)
+/** Projeções mínimas → menos bytes trafegando no pipe */
 const ACCEL_PROJECT_MIN = {
   _id: 0,
   ts: 1,
@@ -31,7 +31,6 @@ const ACCEL_PROJECT_MIN = {
   "meta.severity": 1,
   fw: 1, units: 1,
 };
-
 const FREQ_PROJECT_MIN = {
   _id: 0,
   ts: 1,
@@ -54,44 +53,41 @@ function numberOrNull(x, dflt = null) {
 }
 
 /* =====================================================================
- * ⚙️ FIXED LIMITS (modo “na mão”)
+ * ⚙️ LIMITES "NA MÃO" (toggle)
  *  - Coloque USE_FIXED_LIMITS = true para usar os valores abaixo.
- *  - Para voltar ao banco de dados, mude para false (ou remova o bloco).
+ *  - Para voltar ao banco de dados, mude para false.
  * ===================================================================*/
 const USE_FIXED_LIMITS = true;
 
 const FIXED_LIMITS_DEFAULT = {
   freq_alert: 3.7,
   freq_critical: 7,
-  accel_alert: 12,
+  accel_alert: 10,
   accel_critical: 20,
 };
 
-// opcional: se quiser limites por ponte específica, preencha aqui:
-//   chave = bridge_id (string do ObjectId)
+// opcional: overrides por ponte (key = bridge_id string)
 const FIXED_LIMITS_BY_BRIDGE = {
-  // "68b9e38a69deabb365734c4c": { freq_alert: 3.7, freq_critical: 7, accel_alert: 10, accel_critical: 20 }
+  // "BRIDGE_OBJECT_ID_HERE": { freq_alert: 3.7, freq_critical: 7, accel_alert: 10, accel_critical: 20 }
 };
 
 async function getBridgeLimitsCached(bridgeId) {
   const key = String(bridgeId);
   const now = Date.now();
 
-  // 1) Modo com limites fixos “na mão”
   if (USE_FIXED_LIMITS) {
-    const vRaw = FIXED_LIMITS_BY_BRIDGE[key] || FIXED_LIMITS_DEFAULT;
+    const raw = FIXED_LIMITS_BY_BRIDGE[key] || FIXED_LIMITS_DEFAULT;
     const v = {
-      freq_alert:    numberOrNull(vRaw.freq_alert,    3.7),
-      freq_critical: numberOrNull(vRaw.freq_critical, 7),
-      accel_alert:   numberOrNull(vRaw.accel_alert,   10),
-      accel_critical:numberOrNull(vRaw.accel_critical,20),
+      freq_alert:    numberOrNull(raw.freq_alert, 3.7),
+      freq_critical: numberOrNull(raw.freq_critical, 7),
+      accel_alert:   numberOrNull(raw.accel_alert, 10),
+      accel_critical:numberOrNull(raw.accel_critical, 20),
       _source: "fixed",
     };
     limitsCache.set(key, { at: now, v });
     return v;
   }
 
-  // 2) Caso queira voltar ao banco (mantido para futuro)
   const hit = limitsCache.get(key);
   if (hit && (now - hit.at) < LIMITS_TTL_MS) return hit.v;
 
@@ -113,7 +109,7 @@ async function getBridgeLimitsCached(bridgeId) {
   return v;
 }
 
-// (Opcional) Invalidação reativa — fica sem efeito prático no modo FIXED, mas mantemos a função.
+// (Opcional) watcher — no modo FIXED não muda nada, mas deixamos pronto
 export function startBridgeLimitsWatcher() {
   try {
     const db = mongoose.connection.db;
@@ -122,24 +118,22 @@ export function startBridgeLimitsWatcher() {
     ]);
     cs.on("change", (ch) => {
       const bridgeId = ch.fullDocument?.bridge_id || ch.updateDescription?.updatedFields?.bridge_id;
-      if (bridgeId) {
-        limitsCache.delete(String(bridgeId));
-      } else {
-        limitsCache.clear();
-      }
+      if (bridgeId) limitsCache.delete(String(bridgeId));
+      else limitsCache.clear();
     });
   } catch {
-    // ambientes sem changeStream (Atlas-free/standalone) podem ignorar
+    // ok em ambientes sem changeStream
   }
 }
 
 /* =====================================================================
- * Helpers de severidade
+ * Helpers de severidade (sempre a partir do VALOR ATUAL)
  * ===================================================================*/
 function severityFromValue(v, warn, crit) {
-  if (v == null || !Number.isFinite(v)) return null;
-  if (v > crit) return "critical";
-  if (v > warn) return "warning";
+  // regra confirmada: sem valor/sem atividade => NORMAL
+  if (v == null || !Number.isFinite(v)) return "normal";
+  if (v > crit)  return "critical";
+  if (v > warn)  return "warning";
   return "normal";
 }
 
@@ -149,34 +143,32 @@ function rmsFromAxes(ax, ay, az) {
 }
 
 /* =====================================================================
- * INSERÇÕES DE TELEMETRIA (com severidade baseada nos limites)
+ * INSERÇÕES DE TELEMETRIA (severidade calculada aqui)
  * ===================================================================*/
 
 // Aceleração
 export async function insertAccel({
   company_id, bridge_id, device_id,
   ts, axis = "z", value, rms, ax, ay, az, fw,
-  severity = null, // se vier do dispositivo, ainda assim conferimos
 }) {
   const tsUTC = ts ? new Date(ts) : new Date();
   const { ts_br, date_br, hour_br } = brazilPartsFromUTC(tsUTC);
 
-  // pega limites da ponte (cacheado / fixo)
   const limits = await getBridgeLimitsCached(bridge_id);
 
-  // valor efetivo para comparar (prioriza rms/value; senão calcula de eixos)
+  // valor efetivo (preferência: rms > value > eixo resultante)
   const eff = numberOrNull(rms ?? value, null) ?? rmsFromAxes(ax, ay, az);
-  const sev = severityFromValue(eff, limits.accel_alert, limits.accel_critical) || severity || null;
+  const sev = severityFromValue(eff, limits.accel_alert, limits.accel_critical);
 
   const doc = {
     ts: tsUTC,
     ts_br, date_br, hour_br,
     meta: { company_id, bridge_id, device_id, stream: `accel:${axis}`, severity: sev },
     value: numberOrNull(value, undefined),
-    rms: numberOrNull(rms, undefined),
-    ax: numberOrNull(ax, undefined),
-    ay: numberOrNull(ay, undefined),
-    az: numberOrNull(az, undefined),
+    rms:   numberOrNull(rms,   undefined),
+    ax:    numberOrNull(ax,    undefined),
+    ay:    numberOrNull(ay,    undefined),
+    az:    numberOrNull(az,    undefined),
     units: "m/s2",
     fw,
     severity: sev,
@@ -188,41 +180,43 @@ export async function insertAccel({
 export async function insertFreqPeaks({
   company_id, bridge_id, device_id,
   ts, status, fs, n, peaks, dom_freq, peak, fw,
-  severity = null,
 }) {
   const tsUTC = ts ? new Date(ts) : new Date();
   const { ts_br, date_br, hour_br } = brazilPartsFromUTC(tsUTC);
 
   const limits = await getBridgeLimitsCached(bridge_id);
 
-  // valor de frequência para comparar (dom_freq > peak > peaks[0].f)
-  const p0 = Array.isArray(peaks) && peaks.length ? peaks[0] : null;
-  const fEff =
-    numberOrNull(dom_freq, null) ??
-    numberOrNull(peak, null) ??
-    numberOrNull(p0?.f ?? p0?.freq ?? p0?.x, null);
+  // "sem_atividade" => tratamos efetivo como null => NORMAL
+  const isIdle = status === "sem_atividade";
 
-  const sev = severityFromValue(fEff, limits.freq_alert, limits.freq_critical) || severity || null;
+  // valor efetivo (dom_freq > peak > peaks[0].f)
+  const p0 = Array.isArray(peaks) && peaks.length ? peaks[0] : null;
+  const fEff = isIdle
+    ? null
+    : ( numberOrNull(dom_freq, null)
+        ?? numberOrNull(peak, null)
+        ?? numberOrNull(p0?.f ?? p0?.freq ?? p0?.x, null) );
+
+  const sev = severityFromValue(fEff, limits.freq_alert, limits.freq_critical);
 
   const doc = {
     ts: tsUTC,
     ts_br, date_br, hour_br,
     meta: { company_id, bridge_id, device_id, stream: "freq:z", severity: sev },
-    status, fs: numberOrNull(fs, undefined), n: numberOrNull(n, undefined),
-    peaks, fw,
-    // também guardamos campos "flatten" se vierem
+    status: isIdle ? "sem_atividade" : (status ?? null),
+    fs: numberOrNull(fs, undefined),
+    n:  numberOrNull(n,  undefined),
+    peaks,
+    fw,
     dom_freq: numberOrNull(dom_freq, undefined),
-    peak: numberOrNull(peak, undefined),
+    peak:     numberOrNull(peak,     undefined),
     severity: sev,
   };
   return mongoose.connection.db.collection(FREQ).insertOne(doc);
 }
 
 // Status do dispositivo (histórico opcional)
-export async function insertDeviceStatus({
-  company_id, bridge_id, device_id,
-  ts, status, rssi, battery_v
-}) {
+export async function insertDeviceStatus({ company_id, bridge_id, device_id, ts, status, rssi, battery_v }) {
   const tsUTC = ts ? new Date(ts) : new Date();
   const { ts_br, date_br, hour_br } = brazilPartsFromUTC(tsUTC);
 
@@ -255,8 +249,8 @@ export async function updateBridgeStatusFor(bridgeId, companyId) {
   const nowMs = now.getTime();
 
   const devices = await Device.find({ bridge_id: bridgeId, company_id: companyId })
-                              .select("device_id last_seen infos")
-                              .lean();
+    .select("device_id last_seen infos")
+    .lean();
 
   const rows = devices.map(d => {
     const status = classify(d.last_seen, nowMs);
@@ -284,14 +278,7 @@ export async function updateBridgeStatusFor(bridgeId, companyId) {
 
   await BridgeStatus.findOneAndUpdate(
     { company_id: companyId, bridge_id: bridgeId },
-    {
-      $set: {
-        updated_at: now,
-        ts_br, date_br, hour_br,
-        summary,
-        devices: rows,
-      },
-    },
+    { $set: { updated_at: now, ts_br, date_br, hour_br, summary, devices: rows } },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
 
@@ -299,10 +286,7 @@ export async function updateBridgeStatusFor(bridgeId, companyId) {
 }
 
 export async function updateAllBridgeStatuses() {
-  const pairs = await Device.aggregate([
-    { $group: { _id: { company_id: "$company_id", bridge_id: "$bridge_id" } } }
-  ]);
-
+  const pairs = await Device.aggregate([{ $group: { _id: { company_id: "$company_id", bridge_id: "$bridge_id" } } }]);
   const results = [];
   for (const p of pairs) {
     const { company_id, bridge_id } = p._id;
@@ -313,7 +297,7 @@ export async function updateAllBridgeStatuses() {
 }
 
 /* =====================================================================
- * LATEST (p/ Dashboard / Bridge Page)
+ * LATEST (Dashboard / Bridge Page)
  * ===================================================================*/
 
 function idVariants(id) {
@@ -321,14 +305,13 @@ function idVariants(id) {
   try { list.push(new mongoose.Types.ObjectId(id)); } catch {}
   return list;
 }
-
 function getHintFor(matchQuery) {
   if (matchQuery["meta.bridge_id"])  return { "meta.bridge_id": 1,  "meta.device_id": 1, ts: -1 };
   if (matchQuery["meta.company_id"]) return { "meta.company_id": 1, "meta.device_id": 1, ts: -1 };
   return undefined;
 }
 
-// garante shape flatten p/ front e aplica fallback de severity (sem gravar)
+/** Normaliza doc de ACCEL e recalcula severidade pelo VALOR */
 function mapAccelDoc(d, limits) {
   if (!d) return null;
   const rms = numberOrNull(d.rms ?? d?.metrics?.rms, null);
@@ -337,32 +320,28 @@ function mapAccelDoc(d, limits) {
   const ay  = numberOrNull(d.ay, null);
   const az  = numberOrNull(d.az, null);
   const eff = (rms ?? val ?? ((ax!=null||ay!=null||az!=null) ? rmsFromAxes(ax,ay,az) : null));
-  const sev = d.severity ?? d?.meta?.severity ?? severityFromValue(eff, limits.accel_alert, limits.accel_critical) ?? null;
+  const sev = severityFromValue(eff, limits.accel_alert, limits.accel_critical);
 
-  return {
-    ts: d.ts,
-    value: val,
-    rms,
-    ax, ay, az,
-    severity: sev,
-  };
+  return { ts: d.ts, value: val, rms, ax, ay, az, severity: sev };
 }
 
+/** Normaliza doc de FREQ e recalcula severidade pelo VALOR */
 function mapFreqDoc(d, limits) {
   if (!d) return null;
-  const dom = numberOrNull(d.dom_freq ?? d?.metrics?.dom_freq, null);
-  const peak = numberOrNull(d.peak ?? d?.metrics?.peak, null);
-  const p0 = Array.isArray(d.peaks ?? d?.metrics?.peaks) && (d.peaks ?? d?.metrics?.peaks).length
+  const isIdle = d.status === "sem_atividade";
+  const dom  = numberOrNull(d.dom_freq ?? d?.metrics?.dom_freq, null);
+  const peak = numberOrNull(d.peak     ?? d?.metrics?.peak,     null);
+  const p0   = Array.isArray(d.peaks ?? d?.metrics?.peaks) && (d.peaks ?? d?.metrics?.peaks).length
     ? (d.peaks ?? d?.metrics?.peaks)[0] : null;
-  const fEff = (dom ?? peak ?? numberOrNull(p0?.f ?? p0?.freq ?? p0?.x, null));
-  const sev = d.severity ?? d?.meta?.severity ?? severityFromValue(fEff, limits.freq_alert, limits.freq_critical) ?? null;
+  const fEff = isIdle ? null : (dom ?? peak ?? numberOrNull(p0?.f ?? p0?.freq ?? p0?.x, null));
+  const sev  = severityFromValue(fEff, limits.freq_alert, limits.freq_critical);
 
   return {
     ts: d.ts,
-    status: d.status ?? null,
+    status: isIdle ? "sem_atividade" : (d.status ?? null),
     fs: numberOrNull(d.fs, null),
-    n: numberOrNull(d.n, null),
-    peak: peak,
+    n:  numberOrNull(d.n,  null),
+    peak,
     dom_freq: dom,
     peaks: d.peaks ?? d?.metrics?.peaks ?? null,
     severity: sev,
@@ -389,7 +368,6 @@ async function latestPerDevice(collectionName, matchQuery) {
     for (const r of rows) map.set(String(r?.meta?.device_id), r);
     return map;
   } catch {
-    // fallback conservador
     return new Map();
   }
 }
@@ -414,7 +392,7 @@ export async function latestByCompany(companyId) {
     const freqRaw  = freqMap.get(k)  || null;
     const status = classify(d.last_seen, now);
 
-    // limites por ponte (cacheado/fixo) uma vez por device (mesma ponte → cache hit)
+    // limites por ponte (cacheado) — um hit por device (mesma ponte → cache hit)
     const limits = await getBridgeLimitsCached(d.bridge_id);
 
     const accel = accelRaw ? mapAccelDoc(accelRaw, limits) : null;
@@ -490,22 +468,19 @@ function clampDeviceIds(deviceIds = []) {
   return deviceIds;
 }
 
-// pega os N mais recentes por device, com fallbacks
+// pega os N mais recentes por device, com fallbacks progressivos
 async function lastNPerDevice(collectionName, matchQuery, limit = 10, deviceIds = []) {
   const coll = mongoose.connection.db.collection(collectionName);
-
   if (Array.isArray(deviceIds)) deviceIds = clampDeviceIds(deviceIds);
   const hint = getHintFor(matchQuery);
 
-  // 1) tenta $topN (>= 5.2)
+  // 1) $topN (MongoDB 5.2+)
   const pipelineTopN = [
     { $match: matchQuery },
-    {
-      $group: {
+    { $group: {
         _id: "$meta.device_id",
         docs: { $topN: { sortBy: { ts: -1 }, output: "$$ROOT", n: Math.min(Number(limit || HISTORY_DEFAULT_N), HISTORY_DEFAULT_N) } }
-      }
-    },
+    }},
     { $project: { _id: 0, device_id: "$_id", docs: { $reverseArray: "$docs" } } },
     { $limit: DEVICE_HARD_CAP }
   ];
@@ -517,7 +492,7 @@ async function lastNPerDevice(collectionName, matchQuery, limit = 10, deviceIds 
       r.docs = r.docs.map(d => {
         if (collectionName === ACCEL) {
           const { ts, value, rms, ax, ay, az, severity, meta, fw, units } = d;
-          return { ts, value, rms, ax, ay, az, severity: severity ?? meta?.severity ?? null, meta: { device_id: meta?.device_id, severity: meta?.severity }, fw, units };
+          return { ts, value, rms, ax, ay, az, severity: severity ?? meta?.severity ?? "normal", meta: { device_id: meta?.device_id, severity: meta?.severity }, fw, units };
         } else {
           const { ts, status, fs, n, peak, dom_freq, peaks, severity, metrics, meta, fw } = d;
           return {
@@ -525,7 +500,7 @@ async function lastNPerDevice(collectionName, matchQuery, limit = 10, deviceIds 
             peak: numberOrNull(peak ?? metrics?.peak, null),
             dom_freq: numberOrNull(dom_freq ?? metrics?.dom_freq, null),
             peaks: peaks ?? metrics?.peaks ?? null,
-            severity: severity ?? meta?.severity ?? null,
+            severity: severity ?? meta?.severity ?? "normal",
             meta: { device_id: meta?.device_id, severity: meta?.severity },
             fw
           };
@@ -534,17 +509,11 @@ async function lastNPerDevice(collectionName, matchQuery, limit = 10, deviceIds 
       map.set(String(r.device_id), r.docs);
     }
     return map;
-  } catch (errTopN) {
-    // 2) fallback: janela (>= 5.0)
+  } catch {
+    // 2) janela
     const pipelineWindow = [
       { $match: matchQuery },
-      {
-        $setWindowFields: {
-          partitionBy: "$meta.device_id",
-          sortBy: { ts: -1 },
-          output: { rk: { $documentNumber: {} } }
-        }
-      },
+      { $setWindowFields: { partitionBy: "$meta.device_id", sortBy: { ts: -1 }, output: { rk: { $documentNumber: {} } } } },
       { $match: { rk: { $lte: Math.min(Number(limit || HISTORY_DEFAULT_N), HISTORY_DEFAULT_N) } } },
       { $sort: { "meta.device_id": 1, ts: 1 } },
       { $group: { _id: "$meta.device_id", docs: { $push: "$$ROOT" } } },
@@ -559,7 +528,7 @@ async function lastNPerDevice(collectionName, matchQuery, limit = 10, deviceIds 
         r.docs = r.docs.map(d => {
           if (collectionName === ACCEL) {
             const { ts, value, rms, ax, ay, az, severity, meta, fw, units } = d;
-            return { ts, value, rms, ax, ay, az, severity: severity ?? meta?.severity ?? null, meta: { device_id: meta?.device_id, severity: meta?.severity }, fw, units };
+            return { ts, value, rms, ax, ay, az, severity: severity ?? meta?.severity ?? "normal", meta: { device_id: meta?.device_id, severity: meta?.severity }, fw, units };
           } else {
             const { ts, status, fs, n, peak, dom_freq, peaks, severity, metrics, meta, fw } = d;
             return {
@@ -567,7 +536,7 @@ async function lastNPerDevice(collectionName, matchQuery, limit = 10, deviceIds 
               peak: numberOrNull(peak ?? metrics?.peak, null),
               dom_freq: numberOrNull(dom_freq ?? metrics?.dom_freq, null),
               peaks: peaks ?? metrics?.peaks ?? null,
-              severity: severity ?? meta?.severity ?? null,
+              severity: severity ?? meta?.severity ?? "normal",
               meta: { device_id: meta?.device_id, severity: meta?.severity },
               fw
             };
@@ -576,8 +545,8 @@ async function lastNPerDevice(collectionName, matchQuery, limit = 10, deviceIds 
         map.set(String(r.device_id), r.docs);
       }
       return map;
-    } catch (errWindow) {
-      // 3) fallback final: um find por device
+    } catch {
+      // 3) fallback final por device
       const ids = deviceIds.length ? deviceIds : await coll.distinct("meta.device_id", matchQuery);
       const map = new Map();
       for (const id of clampDeviceIds(ids)) {
@@ -597,7 +566,7 @@ async function lastNPerDevice(collectionName, matchQuery, limit = 10, deviceIds 
 }
 
 export async function historyByBridge(bridgeId, limit = HISTORY_DEFAULT_N) {
-  // força limite máximo fixo
+  // força limite máximo fixo (proteção)
   limit = Math.min(Number(limit || HISTORY_DEFAULT_N), HISTORY_DEFAULT_N);
 
   const variants = idVariants(bridgeId);
