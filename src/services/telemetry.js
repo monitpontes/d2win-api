@@ -17,7 +17,7 @@ const BRIDGE_LIMITS = "bridge_limits";
  * ==================================================================== */
 const HISTORY_DEFAULT_N = Number(process.env.HISTORY_DEFAULT_N || 10);  // últimos 10 para history
 const DEVICE_HARD_CAP   = Number(process.env.DEVICE_HARD_CAP   || 2000);
-const QUERY_MAX_MS      = Number(process.env.QUERY_MAX_MS      || 3000);
+const QUERY_MAX_MS      = Number(process.env.QUERY_MAX_MS      || 10000);
 
 // TTL do cache de limites (mesmo com modo FIXED, mantemos estrutura)
 const LIMITS_TTL_MS     = Number(process.env.BRIDGE_LIMITS_TTL_MS || (24 * 60 * 60 * 1000));
