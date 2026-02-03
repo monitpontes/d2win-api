@@ -24,25 +24,36 @@ function resolveFreqLimitsFromDevice(dev, bridgeLim) {
     {};
 
   return {
-    mag_warning:  fl.mag_warning  ?? fl.warning      ?? fl.peak_warning ??
-                  bridgeLim?.freq_mag_alert ?? bridgeLim?.freq_alert ?? null,
-    mag_critical: fl.mag_critical ?? fl.critical     ?? fl.peak_critical ??
-                  bridgeLim?.freq_mag_critical ?? bridgeLim?.freq_critical ?? null
+    f_warning:  fl.f_warning  ?? fl.warning      ?? bridgeLim?.freq_alert ?? null,
+    f_critical: fl.f_critical ?? fl.critical     ?? bridgeLim?.freq_critical ?? null
   };
 }
 
 function classifyFreqSeverity(status, peaks, lim) {
+  // Se não tiver picos, use o status como fallback
   if (!Array.isArray(peaks) || peaks.length === 0) {
-    // sem picos: keep-alive -> normal; atividade sem picos -> warning (conservador)
     return status === "atividade_detectada" ? "warning" : "normal";
   }
-  const maxMag = Math.max(...peaks.map(p => Math.abs(Number(p.mag) || 0)));
-  if (lim.mag_critical != null && maxMag >= lim.mag_critical) return "critical";
-  if (lim.mag_warning  != null && maxMag >= lim.mag_warning)  return "warning";
-  // se não há limites definidos, reporta warning quando há atividade
-  if (lim.mag_warning == null && lim.mag_critical == null) {
+
+  // Escolhe o pico principal: o de maior magnitude (mais “forte”)
+  const mainPeak = peaks.reduce((best, p) => {
+    const mag = Math.abs(Number(p.mag) || 0);
+    const bestMag = Math.abs(Number(best?.mag) || 0);
+    return mag > bestMag ? p : best;
+  }, peaks[0]);
+
+  const f = Math.abs(Number(mainPeak.f) || 0);
+
+  // Sem limites definidos → comportamento conservador
+  if (lim.f_warning == null && lim.f_critical == null) {
     return status === "atividade_detectada" ? "warning" : "normal";
   }
+
+  // ⚠️ Importante: sua regra de “crítico” depende do que você quer dizer com limite:
+  // Se "freq_critical" é um "limite máximo" (f >= critical), use assim:
+  if (lim.f_critical != null && f >= lim.f_critical) return "critical";
+  if (lim.f_warning  != null && f >= lim.f_warning)  return "warning";
+
   return "normal";
 }
 
