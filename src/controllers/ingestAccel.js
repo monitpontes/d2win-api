@@ -97,17 +97,17 @@ export async function ingestAccel(req, res, next) {
 
       const message = `Aceleração ${body.value.toFixed(2)} m/s² > limite ${rotulo} (${ref} m/s²)`;
 
-      await Alert.create({
-        company_id: dev.company_id,
-        bridge_id: dev.bridge_id,
-        device_id: dev.device_id,
-        type: "accel",
-        severity,
-        message,
-        payload: { value: body.value, axis: body.axis || "z", ts: tsUTC, limits: lim }
-      });
+      // await Alert.create({
+      //   company_id: dev.company_id,
+      //   bridge_id: dev.bridge_id,
+      //   device_id: dev.device_id,
+      //   type: "accel",
+      //   severity,
+      //   message,
+      //   payload: { value: body.value, axis: body.axis || "z", ts: tsUTC, limits: lim }
+      // });
 
-      await notifyBridge(dev.bridge_id, { title: `Aceleração (${rotulo})`, body: message, severity }, severity);
+      // await notifyBridge(dev.bridge_id, { title: `Aceleração (${rotulo})`, body: message, severity }, severity);
     }
 
     return res.status(201).json({ ok: true, id: docId.toString() });

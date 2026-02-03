@@ -59,7 +59,7 @@ function numberOrNull(x, dflt = null) {
  *  - Coloque USE_FIXED_LIMITS = true para usar os valores abaixo.
  *  - Para voltar ao banco de dados, mude para false.
  * ===================================================================*/
-const USE_FIXED_LIMITS = true;
+const USE_FIXED_LIMITS = false;
 
 const FIXED_LIMITS_DEFAULT = {
   freq_alert: 3.7,
