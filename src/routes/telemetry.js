@@ -90,4 +90,96 @@ router.get("/history/bridge/:bridgeId", async (req, res, next) => {
   }
 });
 
+// =====================================================
+// ✅ TESTE WEBSOCKET (provisório)
+// Use apenas para validar se o WS está emitindo eventos.
+// TODO: remover quando o frontend estiver integrado.
+// =====================================================
+
+// GET /telemetry/websocket/accel/:bridgeId
+router.get("/websocket/accel/:bridgeId", (req, res) => {
+  const io = globalThis.__io;
+  const { bridgeId } = req.params;
+
+  if (!io) {
+    return res.status(500).json({
+      ok: false,
+      error: "Socket.IO não inicializado (io=null). Verifique se app.js criou o io.",
+    });
+  }
+
+  io.to(`bridge:${bridgeId}`).emit("telemetry", {
+    type: "accel",
+    bridge_id: bridgeId,
+    ts: new Date().toISOString(),
+    payload: {
+      axis: "z",
+      value: 9.81,
+      rms: 9.70,
+      ax: null,
+      ay: null,
+      az: 9.81,
+      severity: "normal",
+      _test: true,
+    },
+  });
+
+  return res.json({ ok: true, emitted: "telemetry", room: `bridge:${bridgeId}`, type: "accel" });
+});
+
+// GET /telemetry/websocket/freq/:bridgeId
+router.get("/websocket/freq/:bridgeId", (req, res) => {
+  const io = globalThis.__io;
+  const { bridgeId } = req.params;
+
+  if (!io) {
+    return res.status(500).json({
+      ok: false,
+      error: "Socket.IO não inicializado (io=null). Verifique se app.js criou o io.",
+    });
+  }
+
+  io.to(`bridge:${bridgeId}`).emit("telemetry", {
+    type: "freq",
+    bridge_id: bridgeId,
+    ts: new Date().toISOString(),
+    payload: {
+      status: "atividade_detectada",
+      fs: 50,
+      n: 4096,
+      peaks: [
+        { f: 3.5, mag: 1000 },
+        { f: 3.4, mag: 800 },
+      ],
+      severity: "normal",
+      _test: true,
+    },
+  });
+
+  return res.json({ ok: true, emitted: "telemetry", room: `bridge:${bridgeId}`, type: "freq" });
+});
+
+//// TODO: remover esta rota /ws-test quando o frontend estiver integrado (é só para validação manual)
+// ---- ROTA DE TESTE DE WEBSOCKET (em app.js) ----
+router.get("/ws-test", (req, res) => {
+  const io = globalThis.__io;
+  const bridge_id = req.query.bridge_id;
+
+  if (!io) return res.status(500).json({ ok: false, error: "Socket.IO not initialized" });
+
+  const msg = {
+    type: "test",
+    bridge_id: bridge_id ?? null,
+    ts: new Date().toISOString(),
+    payload: { hello: "ws ok" }
+  };
+
+  if (bridge_id) io.to(`bridge:${bridge_id}`).emit("telemetry", msg);
+  else io.emit("telemetry", msg);
+
+  return res.json({ ok: true, room: bridge_id ? `bridge:${bridge_id}` : "broadcast" });
+});
+
+
+
 export default router;

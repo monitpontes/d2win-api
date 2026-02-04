@@ -664,3 +664,4 @@ export async function ensureTelemetryIndexes() {
   await db.collection(ACCEL).createIndex({ "meta.device_id": 1, ts: -1 });
   await db.collection(FREQ).createIndex({ "meta.device_id": 1, ts: -1 });
 }
+

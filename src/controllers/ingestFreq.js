@@ -8,11 +8,11 @@ import { toBrazilISOFromUTC } from "../lib/time.js";
 
 const freqSchema = Joi.object({
   device_id: Joi.string().required(),
-  ts:     Joi.alternatives(Joi.date(), Joi.string(), Joi.number()).optional(),
+  ts: Joi.alternatives(Joi.date(), Joi.string(), Joi.number()).optional(),
   status: Joi.string().valid("atividade_detectada", "sem_atividade").optional(),
-  fs:     Joi.number().integer().min(1).optional(),
-  n:      Joi.number().integer().min(1).optional(),
-  peaks:  Joi.array().items(Joi.object({ f: Joi.number().required(), mag: Joi.number().required() })).default([])
+  fs: Joi.number().integer().min(1).optional(),
+  n: Joi.number().integer().min(1).optional(),
+  peaks: Joi.array().items(Joi.object({ f: Joi.number().required(), mag: Joi.number().required() })).default([])
 });
 
 // ---- Limites para FREQ (por dispositivo com fallback p/ BridgeLimit)
@@ -24,8 +24,8 @@ function resolveFreqLimitsFromDevice(dev, bridgeLim) {
     {};
 
   return {
-    f_warning:  fl.f_warning  ?? fl.warning      ?? bridgeLim?.freq_alert ?? null,
-    f_critical: fl.f_critical ?? fl.critical     ?? bridgeLim?.freq_critical ?? null
+    f_warning: fl.f_warning ?? fl.warning ?? bridgeLim?.freq_alert ?? null,
+    f_critical: fl.f_critical ?? fl.critical ?? bridgeLim?.freq_critical ?? null
   };
 }
 
@@ -52,7 +52,7 @@ function classifyFreqSeverity(status, peaks, lim) {
   // ⚠️ Importante: sua regra de “crítico” depende do que você quer dizer com limite:
   // Se "freq_critical" é um "limite máximo" (f >= critical), use assim:
   if (lim.f_critical != null && f >= lim.f_critical) return "critical";
-  if (lim.f_warning  != null && f >= lim.f_warning)  return "warning";
+  if (lim.f_warning != null && f >= lim.f_warning) return "warning";
 
   return "normal";
 }
@@ -79,25 +79,48 @@ export async function ingestFrequency(req, res, next) {
       meta: {
         object_id: docId,
         company_id: dev.company_id,
-        bridge_id:  dev.bridge_id,
-        device_id:  dev.device_id
+        bridge_id: dev.bridge_id,
+        device_id: dev.device_id
       },
       ts: tsUTC,
       ts_br,
       status: body.status || "atividade_detectada",
       fs: body.fs ?? null,
-      n:  body.n  ?? null,
+      n: body.n ?? null,
       peaks: body.peaks,
       severity
     });
 
     await Device.updateOne(
-  { device_id: body.device_id },
-  { $set: { last_seen: tsUTC } }
-);
+      { device_id: body.device_id },
+      { $set: { last_seen: tsUTC } }
+    );
+
+    // ✅ NOVO: realtime via websocket (não altera fluxo antigo HTTP)
+    // TODO: quando o frontend estiver migrado, o dashboard pode parar de fazer polling do /history
+    const io = globalThis.__io;
+    if (io) {
+      io.to(`bridge:${String(dev.bridge_id)}`).emit("telemetry", {
+        type: "freq",
+        bridge_id: String(dev.bridge_id),
+        company_id: String(dev.company_id),
+        device_id: body.device_id,
+        ts: tsUTC.toISOString(),
+        payload: {
+          status: body.status || "atividade_detectada",
+          fs: body.fs ?? null,
+          n: body.n ?? null,
+          peaks: body.peaks,
+          severity
+        }
+      });
+    }
 
     return res.status(201).json({ ok: true, id: docId.toString() });
   } catch (e) {
     next(e);
   }
 }
+
+
+

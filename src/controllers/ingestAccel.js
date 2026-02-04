@@ -89,6 +89,24 @@ export async function ingestAccel(req, res, next) {
       { $set: { last_seen: tsUTC } }
     );
 
+    // ✅ NOVO: envio em tempo real via WebSocket (ACCEL)
+    const io = globalThis.__io;
+    if (io) {
+      io.to(`bridge:${String(dev.bridge_id)}`).emit("telemetry", {
+        type: "accel",
+        bridge_id: String(dev.bridge_id),
+        company_id: String(dev.company_id),
+        device_id: body.device_id,
+        ts: tsUTC.toISOString(),
+        payload: {
+          axis: body.axis || "z",
+          value: body.value ?? null,
+          severity
+        }
+      });
+    }
+
+
     if (severity !== "normal") {
       const rotulo = severity === "critical" ? "CRÍTICO" : "AVISO";
       const ref = severity === "critical"
@@ -115,3 +133,4 @@ export async function ingestAccel(req, res, next) {
     next(e);
   }
 }
+

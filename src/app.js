@@ -25,6 +25,10 @@ import bridgeLimitsRouter from "./routes/bridgeLimits.js";
 import devicesCrudRouter from "./routes/devicesCrud.js";
 import bridgeStatusRouter from "./routes/bridgeStatus.js";
 
+// sockets
+import http from "http";
+import { Server as SocketIOServer } from "socket.io";
+
 // NOVAS: auth + users (precisam export default router)
 import authRouter from "./routes/auth.js";
 import usersRouter from "./routes/users.js";
@@ -93,30 +97,65 @@ async function boot() {
   }
 }
 
-  // Handler default para Vercel (precisa ser função)
-  export default async function handler(req, res) {
+// Handler default para Vercel (precisa ser função)
+export default async function handler(req, res) {
+  try {
+    if (!bootPromise) bootPromise = boot();
+    await bootPromise;
+    return app(req, res);
+  } catch (e) {
+    console.error("Boot/handler error:", e);
+    res.statusCode = 500;
+    res.end("Internal server error");
+  }
+}
+
+// ---- Start local (apenas fora da Vercel) ----
+if (!isServerless) {
+  const PORT = process.env.PORT || 4000;
+  (async () => {
     try {
       if (!bootPromise) bootPromise = boot();
       await bootPromise;
-      return app(req, res);
-    } catch (e) {
-      console.error("Boot/handler error:", e);
-      res.statusCode = 500;
-      res.end("Internal server error");
-    }
-  }
 
-  // ---- Start local (apenas fora da Vercel) ----
-  if (!isServerless) {
-    const PORT = process.env.PORT || 4000;
-    (async () => {
-      try {
-        if (!bootPromise) bootPromise = boot();
-        await bootPromise;
-        app.listen(PORT, () => console.log(`API listening on :${PORT}`));
-      } catch (e) {
-        console.error("Fatal boot error:", e);
-        process.exit(1);
-      }
-    })();
-  }
+      // ✅ NOVO: server HTTP por cima do express (necessário pro Socket.IO)
+      const httpServer = http.createServer(app);
+
+      // ✅ NOVO: Socket.IO (não interfere em nada no HTTP antigo)
+      const io = new SocketIOServer(httpServer, {
+        cors: { origin: "*", methods: ["GET", "POST"] },
+      });
+
+      // TODO (quando o frontend já estiver 100% usando websocket):
+      // - podemos mover a lógica de "push realtime" para um módulo dedicado (ex: src/realtime/io.js)
+      // - e adicionar autenticação no socket (token) para travar por empresa/usuário
+      globalThis.__io = io;
+
+      io.on("connection", (socket) => {
+        console.log("[socket] connected:", socket.id);
+
+        socket.on("join_bridge", ({ bridge_id }) => {
+          if (!bridge_id) return;
+          socket.join(`bridge:${bridge_id}`);
+          console.log("[socket] join_bridge", socket.id, bridge_id);
+        });
+
+        socket.on("join_company", ({ company_id }) => {
+          if (!company_id) return;
+          socket.join(`company:${company_id}`);
+          console.log("[socket] join_company", socket.id, company_id);
+        });
+
+        socket.on("disconnect", () => {
+          console.log("[socket] disconnected:", socket.id);
+        });
+      });
+
+      httpServer.listen(PORT, () => console.log(`API listening on :${PORT}`));
+    } catch (e) {
+      console.error("Fatal boot error:", e);
+      process.exit(1);
+    }
+  })();
+}
+
