@@ -15,7 +15,7 @@ const BRIDGE_LIMITS = "bridge_limits";
 /** ====================================================================
  * 🔧 Proteções e limites
  * ==================================================================== */
-const HISTORY_DEFAULT_N = Number(process.env.HISTORY_DEFAULT_N || 10);  // últimos 10 para history
+const HISTORY_DEFAULT_N = Number(process.env.HISTORY_DEFAULT_N || 10); // últimos 10 para history
 const DEVICE_HARD_CAP = Number(process.env.DEVICE_HARD_CAP || 2000);
 const QUERY_MAX_MS = Number(process.env.QUERY_MAX_MS || 10000);
 
@@ -316,7 +316,6 @@ function getHintFor(matchQuery) {
 /** Normaliza doc de ACCEL e recalcula severidade pelo VALOR */
 function mapAccelDoc(d, limits) {
   if (!d) return null;
-  // ✅ agora com fallbacks para metrics.*
   const rms = numberOrNull(d.rms ?? d?.metrics?.rms, null);
   const val = numberOrNull(d.value ?? d?.metrics?.value, null);
   const ax = numberOrNull(d.ax ?? d?.metrics?.ax, null);
@@ -350,6 +349,30 @@ function mapFreqDoc(d, limits) {
   };
 }
 
+/**
+ * ✅ FIX DO /latest:
+ * Em vez de aggregate com sort pesado (que pode falhar e voltar Map vazio),
+ * pegamos 1 doc por device via find().sort({ts:-1}).limit(1) usando índice.
+ */
+async function latestOneByMatch(collectionName, matchQuery, projection) {
+  const coll = mongoose.connection.db.collection(collectionName);
+  const hint = getHintFor(matchQuery);
+
+  const rows = await coll
+    .find(matchQuery, { projection })
+    .sort({ ts: -1 })
+    .limit(1)
+    .hint(hint || { "meta.device_id": 1, ts: -1 })
+    .maxTimeMS(QUERY_MAX_MS)
+    .toArray();
+
+  return rows[0] || null;
+}
+
+/**
+ * Mantém sua função antiga (não removi nada),
+ * mas o /latest agora NÃO depende dela.
+ */
 async function latestPerDevice(collectionName, matchQuery) {
   const coll = mongoose.connection.db.collection(collectionName);
   const hint = getHintFor(matchQuery);
@@ -376,19 +399,17 @@ async function latestPerDevice(collectionName, matchQuery) {
     const map = new Map();
 
     for (const r of rows) {
-      // 🔑 chave correta do device (ordem de prioridade)
       const deviceKey =
         r?.meta?.device_id ??
         r?.device_id ??
         null;
 
-      if (deviceKey) {
-        map.set(String(deviceKey), r);
-      }
+      if (deviceKey) map.set(String(deviceKey), r);
     }
 
     return map;
   } catch (err) {
+    console.error("[latestPerDevice] aggregate failed:", collectionName, err?.message || err);
     return new Map();
   }
 }
@@ -400,24 +421,27 @@ export async function latestByCompany(companyId) {
     .select("device_id bridge_id company_id modo_operacao last_seen params_current isActive")
     .lean();
 
-  const deviceCodes = devs.map(d => String(d.device_id));
-
-  const accelMap = await latestPerDevice(ACCEL, { "meta.company_id": { $in: variants }, "meta.device_id": { $in: deviceCodes } });
-  const freqMap = await latestPerDevice(FREQ, { "meta.company_id": { $in: variants }, "meta.device_id": { $in: deviceCodes } });
-
   const now = Date.now();
   const items = [];
+
+  // ✅ Busca “latest” por device (2 queries por device)
   for (const d of devs) {
-    const k = String(d.device_id);
-    const accelRaw = accelMap.get(k) || null;
-    const freqRaw = freqMap.get(k) || null;
+    const deviceId = String(d.device_id);
+
+    const accelRaw = await latestOneByMatch(
+      ACCEL,
+      { "meta.company_id": { $in: variants }, "meta.device_id": deviceId },
+      ACCEL_PROJECT_MIN
+    );
+
+    const freqRaw = await latestOneByMatch(
+      FREQ,
+      { "meta.company_id": { $in: variants }, "meta.device_id": deviceId },
+      FREQ_PROJECT_MIN
+    );
+
     const status = classify(d.last_seen, now);
-
-    // limites por ponte (cacheado) — um hit por device (mesma ponte → cache hit)
     const limits = await getBridgeLimitsCached(d.bridge_id);
-
-    const accel = accelRaw ? mapAccelDoc(accelRaw, limits) : null;
-    const freq = freqRaw ? mapFreqDoc(freqRaw, limits) : null;
 
     items.push({
       device_id: d.device_id,
@@ -428,8 +452,8 @@ export async function latestByCompany(companyId) {
       status,
       params_current: d.params_current || {},
       isActive: d.isActive !== false,
-      accel,
-      freq,
+      accel: accelRaw ? mapAccelDoc(accelRaw, limits) : null,
+      freq: freqRaw ? mapFreqDoc(freqRaw, limits) : null,
     });
   }
 
@@ -448,32 +472,40 @@ export async function latestByBridge(bridgeId) {
   }
 
   const companyIds = [...new Set(devs.map(d => String(d.company_id)))];
-  const deviceCodes = devs.map(d => String(d.device_id));
-
-  const accelMap = await latestPerDevice(ACCEL, { "meta.bridge_id": { $in: variants }, "meta.device_id": { $in: deviceCodes } });
-  const freqMap = await latestPerDevice(FREQ, { "meta.bridge_id": { $in: variants }, "meta.device_id": { $in: deviceCodes } });
-
   const now = Date.now();
   const limits = await getBridgeLimitsCached(bridgeId); // uma vez por ponte
-  const items = devs.map(d => {
-    const k = String(d.device_id);
-    const accel = mapAccelDoc(accelMap.get(k) || null, limits);
-    const freq = mapFreqDoc(freqMap.get(k) || null, limits);
-    const status = classify(d.last_seen, now);
 
-    return {
+  const items = [];
+
+  // ✅ Busca “latest” por device (2 queries por device)
+  for (const d of devs) {
+    const deviceId = String(d.device_id);
+
+    const accelRaw = await latestOneByMatch(
+      ACCEL,
+      { "meta.bridge_id": { $in: variants }, "meta.device_id": deviceId },
+      ACCEL_PROJECT_MIN
+    );
+
+    const freqRaw = await latestOneByMatch(
+      FREQ,
+      { "meta.bridge_id": { $in: variants }, "meta.device_id": deviceId },
+      FREQ_PROJECT_MIN
+    );
+
+    items.push({
       device_id: d.device_id,
       bridge_id: d.bridge_id,
       company_id: d.company_id,
       modo_operacao: d.modo_operacao || "aceleracao",
       last_seen: d.last_seen || null,
-      status,
+      status: classify(d.last_seen, now),
       params_current: d.params_current || {},
       isActive: d.isActive !== false,
-      accel,
-      freq,
-    };
-  });
+      accel: accelRaw ? mapAccelDoc(accelRaw, limits) : null,
+      freq: freqRaw ? mapFreqDoc(freqRaw, limits) : null,
+    });
+  }
 
   return { bridge_id: bridgeId, company_ids: companyIds, updated_at: new Date(), devices: items };
 }
@@ -664,4 +696,3 @@ export async function ensureTelemetryIndexes() {
   await db.collection(ACCEL).createIndex({ "meta.device_id": 1, ts: -1 });
   await db.collection(FREQ).createIndex({ "meta.device_id": 1, ts: -1 });
 }
-
