@@ -264,7 +264,7 @@ import Device from "../models/device.js";
 // === KML -> GeoJSON ===
 import multer from "multer";
 import { DOMParser } from "xmldom";
-import tj from "@tmcw/togeojson";
+import { kml } from "@tmcw/togeojson";
 
 const router = express.Router();
 
@@ -612,7 +612,7 @@ router.post("/:id/upload-kml", upload.single("file"), async (req, res) => {
     const dom = new DOMParser().parseFromString(kmlText, "text/xml");
 
     // KML -> GeoJSON (FeatureCollection)
-    const geojson = tj.kml(dom);
+    const geojson = kml(dom);
 
     // Salva no documento
     bridge.geojson = geojson;
