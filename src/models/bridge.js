@@ -64,7 +64,7 @@ const BridgeSchema = new mongoose.Schema(
     // ===== Concessão / Rodovia =====
     concession: { type: String }, // Ex: "CCR AutoBAn"
     rodovia: { type: String }, // Ex: "SP-348"
-    km: { type: Number }, // Ex: 83.4
+    km: { type: String }, // Ex: 83.4
 
     // ===== Tipologia / Estrutura =====
     typology: {
