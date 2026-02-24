@@ -364,6 +364,12 @@ function normalizeBridgeInput(body) {
   // geojson (se você quiser atualizar via PUT também)
   if (body.geojson !== undefined) out.geojson = body.geojson;
 
+  // ===== Editor 3D (Admin) =====
+  // Permite salvar anotações 3D via PUT /bridges/:id
+  if (body.annotations3d !== undefined) {
+    out.annotations3d = Array.isArray(body.annotations3d) ? body.annotations3d : [];
+  }
+
   return out;
 }
 
@@ -518,28 +524,40 @@ router.post("/", async (req, res) => {
   }
 });
 
-// PUT /bridges/:id
+// PUT /bridges/:id  (agora suporta update parcial, inclusive company_id + annotations3d)
 router.put("/:id", async (req, res) => {
   try {
     const input = normalizeBridgeInput(req.body);
 
-    if (!input.name?.trim()) return res.status(400).json({ message: "Nome da ponte é obrigatório" });
-    if (!input.company_id) return res.status(400).json({ message: "ID da empresa é obrigatório" });
+    // Busca ponte atual para permitir updates parciais
+    const current = await Bridge.findById(req.params.id).lean();
+    if (!current) return res.status(404).json({ message: "Ponte não encontrada" });
 
-    const company = await Company.findById(input.company_id);
+    // fallback para não exigir name/company_id em updates parciais
+    const finalCompanyId = input.company_id ?? current.company_id?.toString();
+    const finalName = input.name ?? current.name;
+
+    if (!finalName?.trim()) return res.status(400).json({ message: "Nome da ponte é obrigatório" });
+    if (!finalCompanyId) return res.status(400).json({ message: "ID da empresa é obrigatório" });
+
+    const company = await Company.findById(finalCompanyId);
     if (!company || !company.isActive) {
       return res.status(404).json({ message: "Empresa não encontrada" });
     }
 
     const existingBridge = await Bridge.findOne({
       _id: { $ne: req.params.id },
-      name: { $regex: new RegExp(`^${input.name.trim()}$`, "i") },
-      company_id: input.company_id,
+      name: { $regex: new RegExp(`^${String(finalName).trim()}$`, "i") },
+      company_id: finalCompanyId,
       isActive: true,
     });
     if (existingBridge) {
       return res.status(409).json({ message: "Já existe uma ponte com este nome nesta empresa" });
     }
+
+    // garante consistência caso o frontend mande company_id + annotations3d sem name
+    input.company_id = finalCompanyId;
+    input.name = String(finalName).trim();
 
     const bridge = await Bridge.findByIdAndUpdate(
       req.params.id,

@@ -1,4 +1,3 @@
-
 // import mongoose from "mongoose";
 // const BridgeSchema = new mongoose.Schema(
 //   {
@@ -14,7 +13,10 @@
 // BridgeSchema.index({ company_id: 1, name: 1 });
 // export default mongoose.model("Bridge", BridgeSchema);
 
+// src/models/bridge.js
 import mongoose from "mongoose";
+
+/* ----------------------------- Subschemas ----------------------------- */
 
 const GeoJSONSchema = new mongoose.Schema(
   {
@@ -28,6 +30,24 @@ const GeoJSONSchema = new mongoose.Schema(
   },
   { _id: false }
 );
+
+// Anotações 3D do Editor (labels/textos no modelo)
+const Annotation3DSchema = new mongoose.Schema(
+  {
+    // opcional: id gerado no frontend (uuid) para facilitar update/remove sem depender de índice
+    id: { type: String },
+
+    text: { type: String, default: "" },
+
+    position: { type: [Number], default: [0, 0, 0] },
+
+    // opcional (se o frontend quiser estilizar depois)
+    color: { type: String },
+  },
+  { _id: false }
+);
+
+/* ------------------------------ Bridge ------------------------------ */
 
 const BridgeSchema = new mongoose.Schema(
   {
@@ -89,6 +109,10 @@ const BridgeSchema = new mongoose.Schema(
     // ===== Mídia =====
     image: { type: String }, // URL/arquivo futuro
     geoReferencedImage: { type: String }, // URL/arquivo futuro
+
+    // ===== Editor 3D (Admin) =====
+    // Anotações de texto posicionadas no modelo 3D (labels)
+    annotations3d: { type: [Annotation3DSchema], default: [] },
 
     // ===== Mapa =====
     // GeoJSON para desenhar no mapa (não precisa ser indexado agora)

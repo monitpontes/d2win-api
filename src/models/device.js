@@ -15,10 +15,9 @@ const DeviceSchema = new mongoose.Schema(
 
     // Tipo/modo de operação
     modo_operacao: { type: String, enum: ["aceleracao", "frequencia", "combo"], default: "aceleracao" },
-    
+
     // Informações do hardware
     model: { type: String },
-    position: { type: String },
     channels: [{ type: String }],
     firmware_version: { type: String },
     last_seen: { type: Date },
@@ -28,6 +27,19 @@ const DeviceSchema = new mongoose.Schema(
       type: Map,
       of: mongoose.Schema.Types.Mixed,
       default: {}
+    },
+
+    position: {
+      x: { type: Number, default: 0 },
+      y: { type: Number, default: 0 },
+      z: { type: Number, default: 0 },
+      _id: false
+    },
+
+    rotation: {
+      x: { type: Number, default: 0 },
+      y: { type: Number, default: 0 },
+      z: { type: Number, default: 0 }
     },
 
     // Informações de status

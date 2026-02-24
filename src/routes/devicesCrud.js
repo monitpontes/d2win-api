@@ -90,6 +90,18 @@ function buildSetFromBody(body = {}) {
   // last_seen também pode vir na raiz
   if (body.last_seen) $set["infos.last_seen"] = String(body.last_seen);
 
+    // position.{x,y,z}  (Editor 3D)
+  if (body.position && typeof body.position === "object") {
+    const x = toNumMaybe(body.position.x);
+    const y = toNumMaybe(body.position.y);
+    const z = toNumMaybe(body.position.z);
+
+    // Atualiza só o que vier válido
+    if (x !== undefined) $set["position.x"] = x;
+    if (y !== undefined) $set["position.y"] = y;
+    if (z !== undefined) $set["position.z"] = z;
+  }
+  
   return $set;
 }
 
