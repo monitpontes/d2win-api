@@ -1,3 +1,4 @@
+// src/controllers/telemetryAggregate.js
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -51,38 +52,10 @@ function writeTmpFile(buffer, filename) {
 }
 
 function escPath(p) {
-  // funciona no Windows e Linux
+  // DuckDB aceita path normal no Linux.
+  // No Windows, precisamos escapar "\" -> "\\"
+  // Essa função funciona nos dois.
   return p.replaceAll("\\", "\\\\");
-}
-
-function duckdbQueryJson({ parquetLocalPath, sqlSelect }) {
-  const duckdbCli = mustEnv("DUCKDB_CLI");
-  const p = escPath(parquetLocalPath);
-
-  // COPY TO STDOUT JSON -> parse
-  const sql = `
-PRAGMA threads=4;
-
-CREATE OR REPLACE VIEW v AS
-SELECT * FROM read_parquet('${p}');
-
-COPY (
-  ${sqlSelect}
-) TO STDOUT (FORMAT JSON);
-`;
-
-  const r = spawnSync(duckdbCli, [":memory:", "-c", sql], {
-    encoding: "utf-8",
-    maxBuffer: 100 * 1024 * 1024,
-  });
-
-  if (r.status !== 0) {
-    throw new Error(`DuckDB falhou:\n${r.stderr || r.stdout}`);
-  }
-
-  const text = (r.stdout || "").trim();
-  if (!text) return [];
-  return JSON.parse(text);
 }
 
 function buildWhere(filters) {
@@ -93,6 +66,68 @@ function buildWhere(filters) {
     clauses.push(`${col}='${value}'`);
   }
   return clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+}
+
+/**
+ * Roda uma query DuckDB contra 1 parquet local e retorna JSON.
+ * ✅ CORREÇÃO DO RENDER: não usa STDOUT.
+ * Em vez disso, gera um arquivo .json em /tmp e lê ele.
+ */
+function duckdbQueryJson({ parquetLocalPath, sqlSelect }) {
+  const duckdbCli = mustEnv("DUCKDB_CLI");
+  const p = escPath(parquetLocalPath);
+
+  // arquivo temporário onde o DuckDB vai gravar o JSON
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "d2win-duckdb-"));
+  const outJsonPath = path.join(tmpDir, `out_${Date.now()}.json`);
+  const outJsonEsc = escPath(outJsonPath);
+
+  const sql = `
+PRAGMA threads=4;
+
+CREATE OR REPLACE VIEW v AS
+SELECT * FROM read_parquet('${p}');
+
+COPY (
+  ${sqlSelect}
+) TO '${outJsonEsc}' (FORMAT JSON);
+`;
+
+  const r = spawnSync(duckdbCli, [":memory:", "-c", sql], {
+    encoding: "utf-8",
+    maxBuffer: 100 * 1024 * 1024,
+  });
+
+  if (r.status !== 0) {
+    // tenta adicionar contexto útil do stderr/stdout
+    const msg = (r.stderr || r.stdout || "").trim();
+    throw new Error(`DuckDB falhou:\n${msg || "sem detalhes (stderr vazio)"}`);
+  }
+
+  // lê o json gravado
+  let text = "";
+  try {
+    if (!fs.existsSync(outJsonPath)) return [];
+    text = fs.readFileSync(outJsonPath, "utf-8").trim();
+  } finally {
+    // cleanup best-effort
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  }
+
+  if (!text) return [];
+
+  // DuckDB JSON export: normalmente é um array JSON
+  // Ex: [ {..}, {..} ]
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    // se vier NDJSON por algum motivo, tenta parse linha a linha
+    const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+    if (lines.length && lines[0].startsWith("{")) {
+      return lines.map((l) => JSON.parse(l));
+    }
+    throw new Error(`JSON inválido retornado pelo DuckDB. Primeiros 200 chars:\n${text.slice(0, 200)}`);
+  }
 }
 
 /* =========================
