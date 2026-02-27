@@ -1,14 +1,10 @@
-// ETL/export_freq_month.js
-// Export mensal (YYYY-MM) da collection telemetry_ts_freq_peaks usando filtro por ts (Date UTC).
-// Gera: ETL/tmp/freq_YYYY-MM.parquet
+// ETL/export_freq_month_br.js
+// Export mensal (YYYY-MM) usando filtro por ts_br (string BR) no Mongo.
+// Saída:
+//   ETL/tmp/telemetry_freq/raw/YYYY/MM/freq_YYYY-MM.parquet
 //
-// Inclui colunas derivadas:
-// - f1, mag1, f2, mag2 (extraídos de doc.peaks[0..1] quando existirem)
-// - f_max8/mag_max8/tag_max8 (maior freq >= 8 dentre f1/f2)
-// - f_max9/mag_max9/tag_max9 (maior freq >= 9 dentre f1/f2)
-// - mantém ts_raw, ts_br_raw, ts_utc (tipado), ts_br_ts (tipado)
-//
-// Uso: node ETL/export_freq_month.js 2026-02
+// Uso:
+//   node ETL/export_freq_month_br.js 2025-11
 
 import dotenv from "dotenv";
 import path from "node:path";
@@ -30,28 +26,56 @@ function resolveDbNameFromUri(uri) {
     const u = new URL(uri);
     const p = (u.pathname || "").replace("/", "").trim();
     if (p) return p;
-  } catch (_) {}
+  } catch {}
   return process.env.MONGO_DB || "test";
 }
 
 function parseYYYYMM(s) {
-  if (!/^\d{4}-\d{2}$/.test(s)) {
-    throw new Error(`Formato inválido. Use YYYY-MM. Ex: 2026-02 (recebido: ${s})`);
-  }
+  if (!/^\d{4}-\d{2}$/.test(s)) throw new Error(`Formato inválido: ${s}. Use YYYY-MM`);
   const [y, m] = s.split("-").map(Number);
   if (m < 1 || m > 12) throw new Error("Mês inválido.");
   return { y, m };
 }
 
-function monthStartUTC(yyyymm) {
+function monthRangeBR(yyyymm) {
   const { y, m } = parseYYYYMM(yyyymm);
-  return new Date(Date.UTC(y, m - 1, 1, 0, 0, 0));
+  const startBR = `${String(y).padStart(4, "0")}-${String(m).padStart(2, "0")}-01T00:00:00`;
+  const ny = m === 12 ? y + 1 : y;
+  const nm = m === 12 ? 1 : m + 1;
+  const endBR = `${String(ny).padStart(4, "0")}-${String(nm).padStart(2, "0")}-01T00:00:00`;
+  return { startBR, endBR, y, m };
 }
 
-function monthEndUTC(yyyymm) {
-  const { y, m } = parseYYYYMM(yyyymm);
-  const next = m === 12 ? { y: y + 1, m: 1 } : { y, m: m + 1 };
-  return new Date(Date.UTC(next.y, next.m - 1, 1, 0, 0, 0));
+function oidToString(x) {
+  if (!x) return null;
+  if (typeof x === "string") return x;
+  if (typeof x.toString === "function") return x.toString();
+  return String(x);
+}
+
+function normalizeFreq(doc) {
+  return {
+    ts_raw: doc.ts,
+    ts_br_raw: doc.ts_br ?? null,
+
+    company_id: oidToString(doc?.meta?.company_id),
+    bridge_id: oidToString(doc?.meta?.bridge_id),
+    device_id: doc.device_id ?? doc?.meta?.device_id ?? null,
+
+    stream: doc?.meta?.stream ?? null,
+    status: doc.status ?? null,
+    severity: doc.severity ?? null,
+
+    n: doc.n ?? null,
+    fs: doc.fs ?? null,
+
+    // mantém estável no parquet
+    peaks_json: JSON.stringify(doc.peaks ?? []),
+  };
+}
+
+function escapeWin(p) {
+  return p.replaceAll("\\", "\\\\");
 }
 
 async function connectWithRetry(client, tries = 3) {
@@ -62,118 +86,39 @@ async function connectWithRetry(client, tries = 3) {
       return;
     } catch (e) {
       lastErr = e;
-      console.log(`Falhou conectar (tentativa ${i}/${tries}). Tentando novamente...`);
+      console.log(`Falhou conectar (tentativa ${i}/${tries}). Retry...`);
       await new Promise((r) => setTimeout(r, 2000 * i));
     }
   }
   throw lastErr;
 }
 
-function oidToString(x) {
-  if (!x) return null;
-  if (typeof x === "string") return x;
-  if (typeof x.toString === "function") return x.toString();
-  return String(x);
-}
-
-function pickPeak(peaks, idx) {
-  if (!Array.isArray(peaks) || peaks.length <= idx) return { f: null, mag: null };
-  const p = peaks[idx] || {};
-  // tenta campos comuns
-  const f = p.freq ?? p.frequency ?? p.f ?? null;
-  const mag = p.mag ?? p.magnitude ?? p.amp ?? p.amplitude ?? null;
-  return { f: f ?? null, mag: mag ?? null };
-}
-
-function maxOver(th, f1, mag1, f2, mag2) {
-  // retorna {f, mag, tag} para maior f >= th
-  let best = { f: null, mag: null, tag: null };
-  const cands = [
-    { f: f1, mag: mag1, tag: "f1" },
-    { f: f2, mag: mag2, tag: "f2" },
-  ].filter((x) => typeof x.f === "number" && isFinite(x.f));
-
-  for (const c of cands) {
-    if (c.f >= th) {
-      if (best.f === null || c.f > best.f) best = c;
-    }
-  }
-  return best;
-}
-
-function normalizeFreq(doc) {
-  const peaks = doc.peaks ?? [];
-  const p1 = pickPeak(peaks, 0);
-  const p2 = pickPeak(peaks, 1);
-
-  const f1 = typeof p1.f === "number" ? p1.f : null;
-  const mag1 = typeof p1.mag === "number" ? p1.mag : null;
-  const f2 = typeof p2.f === "number" ? p2.f : null;
-  const mag2 = typeof p2.mag === "number" ? p2.mag : null;
-
-  const max8 = maxOver(8, f1, mag1, f2, mag2);
-  const max9 = maxOver(9, f1, mag1, f2, mag2);
-
-  return {
-    ts_raw: doc.ts,               // Date -> NDJSON vira ISO
-    ts_br_raw: doc.ts_br ?? null, // string BR
-
-    company_id: oidToString(doc?.meta?.company_id),
-    bridge_id: oidToString(doc?.meta?.bridge_id),
-    device_id: doc.device_id ?? doc?.meta?.device_id ?? null,
-
-    stream: doc?.meta?.stream ?? null, // "freq:z"
-    status: doc.status ?? null,
-    severity: doc.severity ?? null,
-
-    n: doc.n ?? null,
-    fs: doc.fs ?? null,
-
-    f1,
-    mag1,
-    f2,
-    mag2,
-
-    f_max8: max8.f,
-    mag_max8: max8.mag,
-    tag_max8: max8.tag,
-
-    f_max9: max9.f,
-    mag_max9: max9.mag,
-    tag_max9: max9.tag,
-  };
-}
-
-function escapeWin(p) {
-  return p.replaceAll("\\", "\\\\");
-}
-
 async function main() {
   const yyyymm = process.argv[2];
   if (!yyyymm) {
-    console.error("Uso: node ETL/export_freq_month.js YYYY-MM   (ex: 2026-02)");
+    console.error("Uso: node ETL/export_freq_month_br.js YYYY-MM  (ex: 2025-11)");
     process.exit(1);
   }
-  parseYYYYMM(yyyymm);
 
   const MONGO_URI = mustEnv("MONGO_URI");
   const DUCKDB_CLI = mustEnv("DUCKDB_CLI");
   const dbName = resolveDbNameFromUri(MONGO_URI);
 
-  const start = monthStartUTC(yyyymm);
-  const end = monthEndUTC(yyyymm);
+  const { startBR, endBR, y, m } = monthRangeBR(yyyymm);
 
-  const tmpDir = path.resolve("ETL/tmp");
-  fs.mkdirSync(tmpDir, { recursive: true });
+  // output
+  const outDir = path.resolve("ETL/tmp/telemetry_freq/raw", String(y), String(m).padStart(2, "0"));
+  fs.mkdirSync(outDir, { recursive: true });
+  const outParquet = path.join(outDir, `freq_${yyyymm}.parquet`);
 
+  // NDJSON temp
   const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), "d2win-etl-"));
   const ndjsonPath = path.join(tmpBase, `freq_${yyyymm}.ndjson`);
-  const outParquet = path.join(tmpDir, `freq_${yyyymm}.parquet`);
 
   console.log("DB selecionado:", dbName);
-  console.log("Mês:", yyyymm);
-  console.log("Faixa ts (UTC):", start.toISOString(), "->", end.toISOString());
-  console.log("[1/3] Buscando Mongo...");
+  console.log("Mês (BR):", yyyymm);
+  console.log("Faixa ts_br:", startBR, "->", endBR);
+  console.log("[1/3] Buscando Mongo (ts_br)...");
 
   const client = new MongoClient(MONGO_URI, {
     serverSelectionTimeoutMS: 60000,
@@ -190,7 +135,7 @@ async function main() {
     const col = db.collection("telemetry_ts_freq_peaks");
 
     const cursor = col.find(
-      { ts: { $gte: start, $lt: end } },
+      { ts_br: { $gte: startBR, $lt: endBR } },
       { projection: { _id: 0 }, batchSize: 5000 }
     );
 
@@ -210,11 +155,11 @@ async function main() {
 
   console.log("  docs:", count);
   if (count === 0) {
-    console.log("Nada a exportar nesse mês.");
+    console.log("Nada para exportar nesse mês.");
     return;
   }
 
-  console.log("[2/3] Gerando Parquet com DuckDB (tipando timestamps)...");
+  console.log("[2/3] Gerando Parquet com DuckDB (BR como base)...");
 
   const nd = escapeWin(ndjsonPath);
   const out = escapeWin(outParquet);
@@ -236,13 +181,9 @@ SELECT
   severity,
   n,
   fs,
-
-  f1, mag1,
-  f2, mag2,
-
-  f_max8, mag_max8, tag_max8,
-  f_max9, mag_max9, tag_max9
-FROM read_json_auto('${nd}');
+  peaks_json
+FROM read_json_auto('${nd}')
+WHERE ts_br_raw IS NOT NULL;
 
 COPY t TO '${out}' (FORMAT PARQUET);
 `;

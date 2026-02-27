@@ -1,10 +1,10 @@
-// ETL/export_accel_month.js
-// Backfill mensal (YYYY-MM) usando filtro por ts (Date UTC) no Mongo.
-// Gera Parquet em ETL/tmp/accel_YYYY-MM.parquet com:
-// - ts_utc (TIMESTAMPTZ)
-// - ts_br_ts (TIMESTAMP, horário BR, sem fuso)
-// - ts_raw (string ISO) e ts_br_raw (string original)
-// Uso: node ETL/export_accel_month.js 2025-10
+// ETL/export_accel_month_br.js
+// Export mensal (YYYY-MM) usando filtro por ts_br (string BR) no Mongo.
+// Saída:
+//   ETL/tmp/telemetry_accel/raw/YYYY/MM/accel_YYYY-MM.parquet
+//
+// Uso:
+//   node ETL/export_accel_month_br.js 2025-11
 
 import dotenv from "dotenv";
 import path from "node:path";
@@ -13,7 +13,7 @@ import os from "node:os";
 import { MongoClient } from "mongodb";
 import { spawnSync } from "node:child_process";
 
-dotenv.config(); // rode da raiz para ler .env
+dotenv.config();
 
 function mustEnv(name) {
   const v = process.env[name];
@@ -26,8 +26,24 @@ function resolveDbNameFromUri(uri) {
     const u = new URL(uri);
     const p = (u.pathname || "").replace("/", "").trim();
     if (p) return p;
-  } catch (_) {}
+  } catch {}
   return process.env.MONGO_DB || "test";
+}
+
+function parseYYYYMM(s) {
+  if (!/^\d{4}-\d{2}$/.test(s)) throw new Error(`Formato inválido: ${s}. Use YYYY-MM`);
+  const [y, m] = s.split("-").map(Number);
+  if (m < 1 || m > 12) throw new Error("Mês inválido.");
+  return { y, m };
+}
+
+function monthRangeBR(yyyymm) {
+  const { y, m } = parseYYYYMM(yyyymm);
+  const startBR = `${String(y).padStart(4, "0")}-${String(m).padStart(2, "0")}-01T00:00:00`;
+  const ny = m === 12 ? y + 1 : y;
+  const nm = m === 12 ? 1 : m + 1;
+  const endBR = `${String(ny).padStart(4, "0")}-${String(nm).padStart(2, "0")}-01T00:00:00`;
+  return { startBR, endBR, y, m };
 }
 
 function oidToString(x) {
@@ -39,37 +55,19 @@ function oidToString(x) {
 
 function normalizeAccel(doc) {
   return {
-    ts_raw: doc.ts,                 // Date do Mongo -> vai virar ISO no NDJSON
-    ts_br_raw: doc.ts_br ?? null,   // string BR
-
+    ts_raw: doc.ts,               // Date (UTC) do Mongo
+    ts_br_raw: doc.ts_br ?? null, // string BR "YYYY-MM-DDTHH:mm:ss.SSS"
     company_id: oidToString(doc?.meta?.company_id),
     bridge_id: oidToString(doc?.meta?.bridge_id),
     device_id: doc.device_id ?? doc?.meta?.device_id ?? null,
-
     axis: doc?.meta?.axis ?? null,
     severity: doc.severity ?? null,
     value: doc.value ?? null,
   };
 }
 
-function parseYYYYMM(s) {
-  if (!/^\d{4}-\d{2}$/.test(s)) {
-    throw new Error(`Formato inválido. Use YYYY-MM. Ex: 2026-02 (recebido: ${s})`);
-  }
-  const [y, m] = s.split("-").map(Number);
-  if (m < 1 || m > 12) throw new Error("Mês inválido.");
-  return { y, m };
-}
-
-function monthStartUTC(yyyymm) {
-  const { y, m } = parseYYYYMM(yyyymm);
-  return new Date(Date.UTC(y, m - 1, 1, 0, 0, 0));
-}
-
-function monthEndUTC(yyyymm) {
-  const { y, m } = parseYYYYMM(yyyymm);
-  const next = m === 12 ? { y: y + 1, m: 1 } : { y, m: m + 1 };
-  return new Date(Date.UTC(next.y, next.m - 1, 1, 0, 0, 0));
+function escapeWin(p) {
+  return p.replaceAll("\\", "\\\\");
 }
 
 async function connectWithRetry(client, tries = 3) {
@@ -80,7 +78,7 @@ async function connectWithRetry(client, tries = 3) {
       return;
     } catch (e) {
       lastErr = e;
-      console.log(`Falhou conectar (tentativa ${i}/${tries}). Tentando novamente...`);
+      console.log(`Falhou conectar (tentativa ${i}/${tries}). Retry...`);
       await new Promise((r) => setTimeout(r, 2000 * i));
     }
   }
@@ -90,7 +88,7 @@ async function connectWithRetry(client, tries = 3) {
 async function main() {
   const yyyymm = process.argv[2];
   if (!yyyymm) {
-    console.error("Uso: node ETL/export_accel_month.js YYYY-MM   (ex: 2026-02)");
+    console.error("Uso: node ETL/export_accel_month_br.js YYYY-MM  (ex: 2025-11)");
     process.exit(1);
   }
 
@@ -98,20 +96,21 @@ async function main() {
   const DUCKDB_CLI = mustEnv("DUCKDB_CLI");
   const dbName = resolveDbNameFromUri(MONGO_URI);
 
-  const start = monthStartUTC(yyyymm);
-  const end = monthEndUTC(yyyymm);
+  const { startBR, endBR, y, m } = monthRangeBR(yyyymm);
 
-  const tmpDir = path.resolve("ETL/tmp");
-  fs.mkdirSync(tmpDir, { recursive: true });
+  // output: ETL/tmp/telemetry_accel/raw/YYYY/MM/accel_YYYY-MM.parquet
+  const outDir = path.resolve("ETL/tmp/telemetry_accel/raw", String(y), String(m).padStart(2, "0"));
+  fs.mkdirSync(outDir, { recursive: true });
+  const outParquet = path.join(outDir, `accel_${yyyymm}.parquet`);
 
+  // NDJSON temp
   const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), "d2win-etl-"));
   const ndjsonPath = path.join(tmpBase, `accel_${yyyymm}.ndjson`);
-  const outParquet = path.join(tmpDir, `accel_${yyyymm}.parquet`);
 
   console.log("DB selecionado:", dbName);
-  console.log("Mês:", yyyymm);
-  console.log("Faixa ts (UTC):", start.toISOString(), "->", end.toISOString());
-  console.log("[1/3] Buscando Mongo...");
+  console.log("Mês (BR):", yyyymm);
+  console.log("Faixa ts_br:", startBR, "->", endBR);
+  console.log("[1/3] Buscando Mongo (ts_br)...");
 
   const client = new MongoClient(MONGO_URI, {
     serverSelectionTimeoutMS: 60000,
@@ -127,9 +126,9 @@ async function main() {
     const db = client.db(dbName);
     const col = db.collection("telemetry_ts_accel");
 
-    // Filtro por ts (Date)
+    // filtro BR: usa string ts_br
     const cursor = col.find(
-      { ts: { $gte: start, $lt: end } },
+      { ts_br: { $gte: startBR, $lt: endBR } },
       { projection: { _id: 0 }, batchSize: 5000 }
     );
 
@@ -153,15 +152,15 @@ async function main() {
     return;
   }
 
-  console.log("[2/3] Gerando Parquet com DuckDB (tipando timestamps)...");
+  console.log("[2/3] Gerando Parquet com DuckDB (ts_br_ts como base BR)...");
 
-  // escape paths Windows
-  const nd = ndjsonPath.replaceAll("\\", "\\\\");
-  const out = outParquet.replaceAll("\\", "\\\\");
+  const nd = escapeWin(ndjsonPath);
+  const out = escapeWin(outParquet);
 
   const sql = `
 CREATE OR REPLACE TABLE t AS
 SELECT
+  -- guardamos ts_utc também, mas BR é a referência
   CAST(ts_raw AS TIMESTAMPTZ) AS ts_utc,
   CAST(ts_br_raw AS TIMESTAMP) AS ts_br_ts,
 
@@ -174,15 +173,14 @@ SELECT
   axis,
   severity,
   value
-FROM read_json_auto('${nd}');
+FROM read_json_auto('${nd}')
+WHERE ts_br_raw IS NOT NULL;
 
 COPY t TO '${out}' (FORMAT PARQUET);
 `;
 
   const r = spawnSync(DUCKDB_CLI, [":memory:", "-c", sql], { encoding: "utf-8" });
-  if (r.status !== 0) {
-    throw new Error(`DuckDB falhou:\n${r.stderr || r.stdout}`);
-  }
+  if (r.status !== 0) throw new Error(`DuckDB falhou:\n${r.stderr || r.stdout}`);
 
   console.log("[3/3] OK ✅ Parquet criado em:", outParquet);
 }
