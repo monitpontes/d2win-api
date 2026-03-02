@@ -9,7 +9,7 @@ import { toBrazilISOFromUTC, brazilPartsFromUTC } from "../lib/time.js";
  * ==================================================================== */
 const ACCEL = "telemetry_ts_accel";
 const FREQ = "telemetry_ts_freq_peaks";
-const STAT = "telemetry_ts_device_status"; // opcional
+//const STAT = "telemetry_ts_device_status"; // opcional
 const BRIDGE_LIMITS = "bridge_limits";
 
 /** ====================================================================

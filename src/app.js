@@ -39,7 +39,7 @@ import { ensureTimeSeries } from "./scripts/initTimeseries.js";
 import { startBridgeHeartbeat } from "./services/bridgeHeartbeat.js";
 
 // NOVO: rota de agregação de telemetria (ex: /api/telemetry/accel/aggregate?granularity=hourly&year=2025&month=11)
-import telemetryAggregateRoutes from "./routes/telemetryAggregate.js";
+import s3TelemetryRoutes from "./routes/s3Telemetry.js";
 
 dotenv.config();
 
@@ -62,7 +62,7 @@ app.use("/push", pushRouter);
 app.use("/alerts", alertsRouter);
 app.use(health);
 app.use("/telemetry", telemetryRoutes);
-app.use("/telemetry", telemetryAggregateRoutes);
+app.use("/telemetry", s3TelemetryRoutes);
 
 // CRUD
 app.use("/companies", companiesRouter);
