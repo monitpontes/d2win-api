@@ -1,9 +1,14 @@
+// src/routes/s3Telemetry.js
 import express from "express";
 import {
-  accelAggRange, freqAggRange, accelRawRange, freqRawRange,
-  accelBoxplot, freqBoxplot,
-  accelHist, freqHist,
-  telemetrySummary
+  accelAggRange,
+  freqAggRange,
+  accelRawRange,
+  freqRawRange,
+  accelSchema,
+  freqSchema,
+  accelRawExtrema,
+  freqRawExtrema,
 } from "../controllers/s3Telemetry.js";
 
 const router = express.Router();
@@ -16,15 +21,12 @@ router.get("/freq/agg", freqAggRange);
 router.get("/accel/raw", accelRawRange);
 router.get("/freq/raw", freqRawRange);
 
-// BOX PLOT
-router.get("/accel/boxplot", accelBoxplot);
-router.get("/freq/boxplot", freqBoxplot);
+// SCHEMA (RAW/AGG)
+router.get("/accel/schema", accelSchema);
+router.get("/freq/schema", freqSchema);
 
-// HIST
-router.get("/accel/hist", accelHist);
-router.get("/freq/hist", freqHist);
-
-// SUMMARY
-router.get("/summary", telemetrySummary);
+// Extrema (RAW)
+router.get("/accel/raw/extrema", accelRawExtrema);
+router.get("/freq/raw/extrema", freqRawExtrema);
 
 export default router;

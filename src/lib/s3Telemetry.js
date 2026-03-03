@@ -6,14 +6,14 @@ import { spawnSync } from "node:child_process";
 import { getObjectBuffer } from "../services/s3Objects.js";
 
 /* =========================
-   Padrões de tempo (BR)
+   Constantes
    ========================= */
 
-// RAW: usar tempo convertido Brasil (timestamp)
-export const RAW_TIME_COL = "ts_br_ts";
+export const RAW_TIME_COL = "ts_br_ts";   // RAW accel/freq
+export const AGG_TIME_COL = "bucket_br";  // AGG accel/freq
 
-// AGG: bucket_br (já é BR)
-export const AGG_TIME_COL = "bucket_br";
+// UTC-03 fixo
+const BR_OFFSET_MS = 3 * 60 * 60 * 1000;
 
 /* =========================
    Helpers básicos
@@ -24,7 +24,6 @@ function mustEnv(name) {
   if (!v) throw new Error(`${name} ausente no .env`);
   return v;
 }
-
 function pad2(n) {
   return String(n).padStart(2, "0");
 }
@@ -34,14 +33,11 @@ export function mustOneOf(v, allowed, name) {
   return v;
 }
 
-// evita SQL injection nos filtros simples
 export function safeToken(v, fieldName) {
   if (v == null) return null;
   const s = String(v).trim();
   if (!s) return null;
-  if (!/^[A-Za-z0-9._:-]+$/.test(s)) {
-    throw new Error(`Valor inválido em ${fieldName}`);
-  }
+  if (!/^[A-Za-z0-9._:-]+$/.test(s)) throw new Error(`Valor inválido em ${fieldName}`);
   return s;
 }
 
@@ -52,26 +48,14 @@ export function parseISODate(v, field) {
   return d;
 }
 
-export function toDuckTsUTC(d) {
-  // "YYYY-MM-DD HH:MM:SS" em UTC (DuckDB entende)
-  return d.toISOString().replace("T", " ").slice(0, 19);
+function toDuckTsUTC(d) {
+  return d.toISOString().replace("T", " ").slice(0, 19); // YYYY-MM-DD HH:MM:SS
 }
 
-/**
- * Converte Date -> string "YYYY-MM-DD HH:MM:SS" no horário do Brasil (UTC-03).
- * Importante porque você vai filtrar usando ts_br_ts (tempo Brasil).
- *
- * Observação: isso não lida com horário de verão (Brasil não usa atualmente).
- */
+// Converte Date (interno UTC) para string de timestamp BR (UTC-03)
 export function toDuckTsBR(d) {
-  // formata no "relógio local" do Date (já interpretado pelo JS)
-  const yyyy = d.getUTCFullYear();
-  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(d.getUTCDate()).padStart(2, "0");
-  const hh = String(d.getUTCHours()).padStart(2, "0");
-  const mi = String(d.getUTCMinutes()).padStart(2, "0");
-  const ss = String(d.getUTCSeconds()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+  const br = new Date(d.getTime() - BR_OFFSET_MS);
+  return toDuckTsUTC(br);
 }
 
 export function monthsBetween(fromDate, toDate) {
@@ -80,7 +64,7 @@ export function monthsBetween(fromDate, toDate) {
   const end = new Date(toDate.getFullYear(), toDate.getMonth(), 1);
 
   let y = start.getFullYear();
-  let m = start.getMonth(); // 0..11
+  let m = start.getMonth();
   while (y < end.getFullYear() || (y === end.getFullYear() && m <= end.getMonth())) {
     out.push({ year: y, month: m + 1 });
     m++;
@@ -90,7 +74,7 @@ export function monthsBetween(fromDate, toDate) {
 }
 
 /* =========================
-   Keys S3 (RAW e AGG)
+   Keys S3
    ========================= */
 
 export function buildAggKey({ domain, granularity, year, month }) {
@@ -115,6 +99,16 @@ export function buildRawKey({ domain, year, month }) {
   return `telemetry_freq/raw/${yyyy}/${mm}/freq_${yyyymm}.parquet`;
 }
 
+export function keysForAggRange({ domain, granularity, from, to }) {
+  const months = monthsBetween(from, to);
+  return months.map(({ year, month }) => buildAggKey({ domain, granularity, year, month }));
+}
+
+export function keysForRawRange({ domain, from, to }) {
+  const months = monthsBetween(from, to);
+  return months.map(({ year, month }) => buildRawKey({ domain, year, month }));
+}
+
 /* =========================
    DuckDB runner (multi parquet)
    ========================= */
@@ -125,7 +119,6 @@ function writeTmpFile(buffer, filename, prefix = "d2win") {
   fs.writeFileSync(out, buffer);
   return out;
 }
-
 function escPath(p) {
   return p.replaceAll("\\", "\\\\");
 }
@@ -165,7 +158,7 @@ export function buildWhereWithTime({ filters, timeCol, fromTs, toTs }) {
   return clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
 }
 
-export async function duckdbQueryJsonFromS3Keys({ keys, tmpPrefix, sqlSelect }) {
+export async function duckdbQueryJsonFromS3Keys({ keys, tmpPrefix, sqlSelect, threads = 4 }) {
   const duckdbCli = mustEnv("DUCKDB_CLI");
 
   const locals = await downloadParquets(keys, tmpPrefix);
@@ -176,7 +169,7 @@ export async function duckdbQueryJsonFromS3Keys({ keys, tmpPrefix, sqlSelect }) 
   const outJsonEsc = escPath(outJsonPath);
 
   const sql = `
-PRAGMA threads=4;
+PRAGMA threads=${Number(threads) || 4};
 
 ${preSql}
 
@@ -207,23 +200,24 @@ COPY (
   try {
     return JSON.parse(text);
   } catch {
-    // fallback NDJSON
     const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
     if (lines.length && lines[0].startsWith("{")) return lines.map((l) => JSON.parse(l));
     throw new Error(`JSON inválido do DuckDB. Primeiros 200 chars:\n${text.slice(0, 200)}`);
   }
 }
 
-/* =========================
-   Keys por range (lista meses)
-   ========================= */
-
-export function keysForAggRange({ domain, granularity, from, to }) {
-  const months = monthsBetween(from, to);
-  return months.map(({ year, month }) => buildAggKey({ domain, granularity, year, month }));
-}
-
-export function keysForRawRange({ domain, from, to }) {
-  const months = monthsBetween(from, to);
-  return months.map(({ year, month }) => buildRawKey({ domain, year, month }));
+/**
+ * Schema (colunas + tipos) do view v.
+ * Usa PRAGMA table_info('v') => retorna name/type etc.
+ */
+export async function duckdbSchemaFromS3Keys({ keys, tmpPrefix, threads = 2 }) {
+  // PRAGMA table_info('v') retorna colunas:
+  // cid, name, type, notnull, dflt_value, pk
+  const rows = await duckdbQueryJsonFromS3Keys({
+    keys,
+    tmpPrefix,
+    threads,
+    sqlSelect: `SELECT name, type FROM pragma_table_info('v') ORDER BY cid;`,
+  });
+  return rows || [];
 }
