@@ -41,6 +41,13 @@ import { startBridgeHeartbeat } from "./services/bridgeHeartbeat.js";
 // NOVO: rota de agregação de telemetria (ex: /api/telemetry/accel/aggregate?granularity=hourly&year=2025&month=11)
 import s3TelemetryRoutes from "./routes/s3Telemetry.js";
 
+//Bootstrap específico para Mongo (garante que o DB esteja pronto antes de aceitar requisições)
+import { mongoSetup } from "./bootstrap/mongoSetup.js";
+
+// Rollup de telemetria (pode ser chamado no boot ou por cron separado
+import { startHotHourly } from "./crons/hotHourly.js";
+import { startHotDaily } from "./crons/hotDaily.js";
+
 dotenv.config();
 
 export const app = express();
@@ -87,7 +94,14 @@ let bootPromise; // garante boot único por cold start
 
 async function boot() {
   if (!MONGO_URI) throw new Error("Missing MONGO_URI");
-  await connectMongo(MONGO_URI);
+  const nativeDb = await connectMongo(MONGO_URI);
+  await mongoSetup(nativeDb);
+
+  const startRollups = (process.env.START_ROLLUPS || "true").toLowerCase() === "true";
+  if (!isServerless && startRollups) {
+    startHotHourly(nativeDb);
+    startHotDaily(nativeDb);
+  }
 
   // Em serverless (Vercel) evite timers longos
   const initTS = (process.env.INIT_TIMESERIES || "false").toLowerCase() === "true";

@@ -9,7 +9,7 @@ const status = {
 };
 
 export const connectMongo = async (uri) => {
-  if (mongoose.connection.readyState === 1) return; // já conectado
+  if (mongoose.connection.readyState === 1) return mongoose.connection.db; // já conectado
   mongoose.set("strictQuery", true);
 
   status.state = "connecting";
@@ -42,6 +42,7 @@ export const connectMongo = async (uri) => {
   }
 
   await mongoose.connect(uri);
+  return mongoose.connection.db;
 };
 
 export const db = () => mongoose.connection;
