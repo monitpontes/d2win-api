@@ -7,8 +7,8 @@ import {
   freqRawRange,
   accelSchema,
   freqSchema,
-  accelRawExtrema,
-  freqRawExtrema,
+  // accelRawExtrema,
+  // freqRawExtrema,
 } from "../controllers/s3Telemetry.js";
 
 const router = express.Router();
@@ -25,8 +25,8 @@ router.get("/freq/raw", freqRawRange);
 router.get("/accel/schema", accelSchema);
 router.get("/freq/schema", freqSchema);
 
-// Extrema (RAW)
-router.get("/accel/raw/extrema", accelRawExtrema);
-router.get("/freq/raw/extrema", freqRawExtrema);
+// // Extrema (RAW)
+// router.get("/accel/raw/extrema", accelRawExtrema);
+// router.get("/freq/raw/extrema", freqRawExtrema);
 
 export default router;

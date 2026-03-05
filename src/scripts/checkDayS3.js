@@ -1,20 +1,16 @@
-// src/scripts/checkDayS3.js
+// src/scripts/checkDayS3_samples.js
 import "dotenv/config";
-import mongoose from "mongoose";
-import { connectMongo } from "../lib/db.js";
-import { existsObject } from "../services/s3Objects.js";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+import { spawnSync } from "node:child_process";
 
-const TZ_BR = "America/Sao_Paulo";
-const CONTROL_COLL = "export_jobs";
+import { getObjectBuffer } from "../services/s3Objects.js";
 
 function mustEnv(name) {
   const v = process.env[name];
   if (!v) throw new Error(`${name} ausente no .env`);
   return v;
-}
-
-function isYYYYMMDD(s) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(String(s || ""));
 }
 
 function s3Key(domain, type, dayBr) {
@@ -25,81 +21,130 @@ function s3Key(domain, type, dayBr) {
   return `telemetry_${domain}/agg/${Y}/${M}/${type}/${domain}_${type}_${dayBr}.parquet`;
 }
 
-function keysForDay(dayBr) {
-  return [
-    s3Key("accel", "raw", dayBr),
-    s3Key("freq", "raw", dayBr),
-    s3Key("accel", "hourly", dayBr),
-    s3Key("freq", "hourly", dayBr),
-    s3Key("accel", "daily", dayBr),
-    s3Key("freq", "daily", dayBr),
-  ];
+function runDuck(sql) {
+  const cmd = spawnSync("duckdb", ["-c", sql], { encoding: "utf-8" });
+  if (cmd.error) throw cmd.error;
+  if (cmd.status !== 0) throw new Error(cmd.stderr || cmd.stdout);
+  return cmd.stdout;
 }
 
-async function checkKeys(dayBr) {
-  const keys = keysForDay(dayBr);
-  const pairs = await Promise.all(keys.map(async (k) => [k, await existsObject(k)]));
-  const existsByKey = Object.fromEntries(pairs);
-  const allExist = keys.every((k) => !!existsByKey[k]);
-  return { keys, existsByKey, allExist };
+function saveTmpFile(buf, filename) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "d2win-check-"));
+  const full = path.join(dir, filename);
+  fs.writeFileSync(full, buf);
+  return { dir, full };
 }
 
-async function markInMongo(db, dayBr, { allExist, existsByKey }) {
-  const col = db.collection(CONTROL_COLL);
+function parseDescribeColumns(describeOutput) {
+  // pega nomes da primeira coluna do DESCRIBE
+  // output do duckdb vem em tabela; a coluna column_name aparece como primeira coluna.
+  const lines = describeOutput.split("\n").map((l) => l.trim()).filter(Boolean);
+  const cols = [];
 
-  await col.createIndex({ job: 1, day_br: 1 }, { unique: true, name: "uniq_export_job_day" });
+  for (const l of lines) {
+    // ignora linhas de borda
+    if (l.startsWith("┌") || l.startsWith("└") || l.startsWith("├") || l.startsWith("│ column_name")) continue;
+    // linhas "│ ts │ TIMESTAMP │ ..."
+    if (l.startsWith("│")) {
+      const parts = l.split("│").map((p) => p.trim()).filter(Boolean);
+      if (parts.length >= 2) cols.push(parts[0]);
+    }
+  }
+  return cols;
+}
 
-  await col.updateOne(
-    { job: "export_d5", day_br: dayBr },
-    {
-      $set: {
-        job: "export_d5",
-        day_br: dayBr,
-        done: !!allExist,
-        last_result: allExist ? "reconciled_from_s3" : "partial_missing_in_s3",
-        s3_exists: existsByKey,
-        updated_at: new Date(),
-      },
-      $setOnInsert: { created_at: new Date() },
-    },
-    { upsert: true }
-  );
+function pickTimeCol(cols) {
+  // prioridade: bucket_br (agg), depois ts (raw), depois ts_br se for timestamp
+  const preferred = ["bucket_br", "ts"];
+  for (const c of preferred) if (cols.includes(c)) return c;
+  // fallback: qualquer uma
+  if (cols.includes("ts_br")) return "ts_br";
+  return null;
+}
+
+function printBlock(title, txt) {
+  console.log("\n" + "=".repeat(80));
+  console.log(title);
+  console.log("=".repeat(80));
+  console.log(txt.trim());
+}
+
+async function inspect({ title, key }) {
+  console.log(`\n[check] baixando s3://${mustEnv("S3_BUCKET")}/${key}`);
+  const buf = await getObjectBuffer(key);
+  console.log(`[check] size=${(buf.length / (1024 * 1024)).toFixed(2)} MB`);
+
+  const { dir, full } = saveTmpFile(buf, path.basename(key));
+  const file = full.replace(/\\/g, "\\\\");
+
+  try {
+    const desc = runDuck(`DESCRIBE SELECT * FROM read_parquet('${file}');`);
+    printBlock(`${title} :: SCHEMA`, desc);
+
+    const cols = parseDescribeColumns(desc);
+    const timeCol = pickTimeCol(cols);
+
+    const count = runDuck(`SELECT COUNT(*) AS n FROM read_parquet('${file}');`);
+    printBlock(`${title} :: COUNT`, count);
+
+    if (timeCol) {
+      const minmax = runDuck(`
+SELECT
+  MIN(${timeCol}) AS min_time,
+  MAX(${timeCol}) AS max_time
+FROM read_parquet('${file}');
+`);
+      printBlock(`${title} :: MIN/MAX (${timeCol})`, minmax);
+
+      const head2 = runDuck(`
+SELECT * FROM read_parquet('${file}')
+ORDER BY ${timeCol} ASC
+LIMIT 2;
+`);
+      printBlock(`${title} :: 2 primeiros (ORDER BY ${timeCol} ASC)`, head2);
+
+      const tail2 = runDuck(`
+SELECT * FROM read_parquet('${file}')
+ORDER BY ${timeCol} DESC
+LIMIT 2;
+`);
+      printBlock(`${title} :: 2 últimos (ORDER BY ${timeCol} DESC)`, tail2);
+    } else {
+      console.log(`[check] (aviso) não achei coluna de tempo (bucket_br/ts/ts_br).`);
+      const sample = runDuck(`SELECT * FROM read_parquet('${file}') LIMIT 2;`);
+      printBlock(`${title} :: SAMPLE (2 linhas)`, sample);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 async function main() {
-  const dayBr = process.argv[2];
-  if (!isYYYYMMDD(dayBr)) {
-    console.log("Uso: node src/scripts/checkDayS3.js YYYY-MM-DD");
-    process.exit(1);
+  const dayBr = process.argv[2] || "2026-03-01";
+  console.log("[check] dia BR:", dayBr);
+
+  const tasks = [
+    { title: "RAW ACCEL", key: s3Key("accel", "raw", dayBr) },
+    { title: "RAW FREQ", key: s3Key("freq", "raw", dayBr) },
+    { title: "AGG HOURLY ACCEL", key: s3Key("accel", "hourly", dayBr) },
+    { title: "AGG HOURLY FREQ", key: s3Key("freq", "hourly", dayBr) },
+    { title: "AGG DAILY ACCEL", key: s3Key("accel", "daily", dayBr) },
+    { title: "AGG DAILY FREQ", key: s3Key("freq", "daily", dayBr) },
+  ];
+
+  for (const t of tasks) {
+    try {
+      await inspect(t);
+    } catch (e) {
+      console.error(`\n[check] ERRO em ${t.title}`);
+      console.error(String(e?.message || e));
+    }
   }
 
-  const bucket = mustEnv("S3_BUCKET");
-  const mongoUri = mustEnv("MONGO_URI");
-
-  console.log(`[check] dia BR: ${dayBr}`);
-  console.log(`[check] bucket: ${bucket}`);
-
-  // 1) checa S3
-  const r = await checkKeys(dayBr);
-
-  console.log("\n[check] S3 exists:");
-  for (const k of r.keys) {
-    console.log(` - ${r.existsByKey[k] ? "OK " : "MISS"} s3://${bucket}/${k}`);
-  }
-  console.log(`\n[check] allExist=${r.allExist}`);
-
-  // 2) marca no Mongo (export_jobs)
-  await connectMongo(mongoUri);
-  const nativeDb = mongoose.connection.db;
-
-  await markInMongo(nativeDb, dayBr, r);
-
-  console.log(`[check] export_jobs atualizado: job=export_d5 day_br=${dayBr} done=${r.allExist}`);
-
-  await mongoose.disconnect();
+  console.log("\n[check] fim");
 }
 
 main().catch((e) => {
-  console.error("[check] erro:", e?.message || e);
+  console.error("[check] fatal:", e);
   process.exit(1);
 });
