@@ -47,6 +47,8 @@ import { mongoSetup } from "./bootstrap/mongoSetup.js";
 // Rollup de telemetria (pode ser chamado no boot ou por cron separado
 import { startHotHourly } from "./crons/hotHourly.js";
 import { startHotDaily } from "./crons/hotDaily.js";
+import { startExportD5 } from "./crons/exportD5.js";
+
 
 dotenv.config();
 
@@ -101,6 +103,7 @@ async function boot() {
   if (!isServerless && startRollups) {
     startHotHourly(nativeDb);
     startHotDaily(nativeDb);
+    startExportD5(nativeDb);
   }
 
   // Em serverless (Vercel) evite timers longos

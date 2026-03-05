@@ -1,5 +1,9 @@
 // src/services/s3Objects.js
-import { ListObjectsV2Command, GetObjectCommand } from "@aws-sdk/client-s3";
+import {
+  ListObjectsV2Command,
+  GetObjectCommand,
+  HeadObjectCommand,
+} from "@aws-sdk/client-s3";
 import { getS3Client } from "./s3Client.js";
 
 function mustEnv(name) {
@@ -36,6 +40,23 @@ export async function listPrefix(prefix) {
   } while (ContinuationToken);
 
   return out;
+}
+
+// ✅ NOVO: checa se um objeto existe no S3 (rápido, não baixa nada)
+export async function existsObject(key) {
+  const Bucket = mustEnv("S3_BUCKET");
+  const s3 = getS3Client();
+
+  try {
+    await s3.send(new HeadObjectCommand({ Bucket, Key: key }));
+    return true;
+  } catch (e) {
+    // quando não existe, geralmente vem 404
+    if (e?.$metadata?.httpStatusCode === 404) return false;
+    // alguns casos retornam name/code
+    if (e?.name === "NotFound" || e?.Code === "NotFound") return false;
+    throw e;
+  }
 }
 
 // Converte stream do S3 em Buffer
